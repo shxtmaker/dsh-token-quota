@@ -5,13 +5,12 @@ import { test, expect } from "@playwright/test";
 
 const API = "/api/dsh-token-quota";
 
-/** 打开设置弹层（设置卡片入口）。 */
+/** 打开设置页（0.1.7：外壳把 settings.section 渲染在设置面板内容列，不再是弹层）。 */
 async function openSettings(page) {
   await page.goto("/");
-  await page.locator(".qm-card-btn").click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog).toBeVisible();
-  return dialog;
+  const panel = page.locator(".qm-settings-page");
+  await expect(panel).toBeVisible();
+  return panel;
 }
 
 /** 进入某个供应商的独立配置页（目录行 → 打开配置）。 */
@@ -118,9 +117,7 @@ test("自定义阈值在详情卡与设置页预览使用同一判定", async ({
   // 状态药丸与预览同口径（最高 80 ≥ crit 70 → 临界）
   await expect(dialog.locator(".qm-page-head .qm-pill")).toHaveText("临界");
 
-  // 详情弹层用同一份阈值判定（先关掉设置弹层，避免遮罩拦截点击）
-  await dialog.getByRole("button", { name: "关闭" }).click();
-  await expect(dialog).toHaveCount(0);
+  // 详情弹层用同一份阈值判定（设置页是内容列里的一页，无遮罩，直接点侧栏小组件）
   await page.locator(".qm-strip, .qm-rail").first().click();
   await page.getByRole("button", { name: "详情" }).click();
   const detail = page.getByRole("dialog", { name: "供应商限额明细" });

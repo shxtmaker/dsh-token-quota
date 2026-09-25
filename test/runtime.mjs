@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply } from "../lib/index.js";
+import { apply, Config } from "../lib/index.js";
+import { createCtx } from "./harness.mjs";
 
 test("plugin instances do not share traffic and dispose releases event handlers", async () => {
   const originalHome = process.env.DSH_HOME;
@@ -11,13 +12,8 @@ test("plugin instances do not share traffic and dispose releases event handlers"
   process.env.DSH_HOME = home;
   const instances = [];
   function mount() {
-    const routes = new Map();
-    const events = new Map();
-    const dispose = apply({
-      settings: { register: () => ({ get: () => ({}), watch: () => () => {} }) },
-      webServer: { register(route) { routes.set(route.path, route.handler); return () => routes.delete(route.path); } },
-      on(name, fn) { events.set(name, fn); return () => events.delete(name); },
-    });
+    const { ctx, configRef, routes, events } = createCtx({ schema: Config, config: {} });
+    const dispose = apply(ctx, configRef);
     instances.push(dispose);
     return { events, state() {
       let state;
@@ -28,7 +24,7 @@ test("plugin instances do not share traffic and dispose releases event handlers"
   }
   try {
     const first = mount();
-    first.events.get("session/event")({ id: "a" }, { type: "request/header", data: {
+    first.events.get("session/event")[0]({ id: "a" }, { type: "request/header", data: {
       config: { provider: "deepseek-official", model: "one" },
     } });
     const second = mount();

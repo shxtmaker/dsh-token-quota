@@ -8,9 +8,11 @@ import { PROVIDERS } from "../lib/providers.js";
 
 const BASE_URL_DEFAULTS = Object.fromEntries(Object.keys(PROVIDERS).map((id) => [id, PROVIDERS[id].baseUrlDefault]));
 
+// 0.1.7：settings 按 profile 行 id 描述，每行一个 { ns, value } 视图（旧的 settings.get 已移除）。
+const rowsOf = (map) => ({ describe: () => Object.entries(map).map(([ns, value]) => ({ ns, value })) });
+
 // ---- 场景 1：ctx.llm 目录 + 存活路由 + credentials.resolve（凭据库 source=file） ----
-const settings1 = {
-  get: (ns) => ({
+const settings1 = rowsOf({
     "llm-deepseek": { baseURL: "https://api.deepseek.com/v1", apiKeyEnv: "DEEPSEEK_API_KEY" },
     "llm-pi-ai": {
       providers: {
@@ -26,8 +28,7 @@ const settings1 = {
         moonshotai: { displayName: "Moonshot" }, // 只有名字，未配置端点 → 不算已添加
       },
     },
-  }[ns]),
-};
+});
 const ctx1 = {
   get: (name) => (name === "llm" ? llm1 : name === "credentials" ? credentials1 : undefined),
   settings: settings1,
@@ -120,8 +121,7 @@ process.env.OPENROUTER_API_KEY = "env-sk-or";
 process.env.MOONSHOT_API_KEY = "env-sk-ms";
 process.env.ZAI_CODING_CN_API_KEY = "env-sk-zcn";
 const ctx2 = {
-  settings: {
-    get: (ns) => ({
+  settings: rowsOf({
       "llm-deepseek": { baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY" },
       "llm-pi-ai": {
         providers: {
@@ -132,8 +132,7 @@ const ctx2 = {
           "zai-coding-cn": { baseURL: "https://open.bigmodel.cn/api/anthropic", apiKeyEnv: "ZAI_CODING_CN_API_KEY" },
         },
       },
-    }[ns]),
-  },
+  }),
 };
 const detected2 = await detectHarnessSuppliers(ctx2);
 const sup2 = new Map(detected2.filter((d) => d.supplier).map((d) => [d.supplier, d]));

@@ -1,6 +1,6 @@
 # dsh-token-quota（用量监控）
 
-当前版本：**v1.3.0**（2026-09-12）。
+当前版本：**v1.4.0**（2026-09-25）。要求 DSH **≥ 0.1.7-rc.2**。
 
 DeepSeek Harness 插件：显示各供应商**可用周期限额 / 余额 / 报告用量费用**——sidebar 脚部小组件 + 详情页。
 
@@ -27,6 +27,27 @@ DeepSeek Harness 插件：显示各供应商**可用周期限额 / 余额 / 报�
 官方方法只接受对应 HTTPS 主机 + 已知基础路径（拒绝端口/用户信息/查询串/重定向），地址不匹配不发请求；
 无限额度 / 未知余额 / 缺字段保留未知，不冒充零值；分页失败不发布部分总数；不同币种、窗口、来源不相加。
 Windows 专属方法（WebView2 控制台、本地 SQLite、本机 Codex CLI 登录）按规格丢弃——Codex 需本机 CLI 登录态，不适用于服务端 DSH，不注册。
+
+## v1.4.0 新增（适配 DSH 0.1.7 的 Settings 与配置面）
+
+0.1.7 把「插件自注册 settings 命名空间」换成了「一个 profile 行 = 一张配置表单」，并移除了若干旧接口。
+本版本按新契约重做了宿主半的配置接入与客户端设置页落点：
+
+- **配置来自行 config（volatile 引用）**：`Config` 整棵标 `volatile`，`apply(ctx, config)` 收到的就是 loader 维护的引用，
+  读值统一走 `config.get()`。用户保存配置时 **不再重挂插件**（loader 就地提交并发 `loader/volatile-update`），
+  路由观测、刷新历史与本地用量桶不会被一次保存清空。
+- **写入走行 id**：`ctx.settings.register(...)` 在 0.1.7 已不存在（旧版会直接 `TypeError` 让插件整只不激活）。
+  现在用 `ctx.settings.update(<行 id>, patch)` 深合并写入；行 id 就是本插件 `cordis.patch.yml` 插入的 `dsh-token-quota`，
+  行被改名时按值形状认领自己的那一行。
+- **0.1.7 前的配置自动迁移**：harness 启动时把 `<DSH_HOME>/settings.yaml` 改名成 `settings.yaml.imported` 并逐段写进行 config；
+  本插件当时没激活，段就留在了那份文档里。启动后（本行还没有用户层时）读回 `dsh-token-quota` / `quota-monitor` 两段
+  （含 API Key、启用开关、Base URL 覆写），逐字段深合并后写进本行；**来源文件一律保留**。
+- **设置页落点换了槽位**：`settings.plugin.item` 已移除，改注册 `settings.section` 列表项（本插件自成一页，
+  渲染在设置面板内容列；小组件里的「设置」入口仍打开同一面板的弹层形态）。
+- **探测改读 `describe()`**：`ctx.settings.get(ns)` 在 0.1.7 不再提供，LLM 行（`llm-deepseek` / `llm-pi-ai`）
+  改从 `ctx.settings.describe()` 的 `value` 读取；凭据解析仍走 `ctx.credentials.resolve(ref)`。
+- **依赖与门槛**：运行时依赖 `@deepseek-ai/schemastery`（0.1.7 的 volatile 解析在它里面，用上游 schemastery 会被静默吞掉变更）；
+  `dsh.engines.dsh` 提到 `>=0.1.7-rc.2`。
 
 ## v1.1.2 新增
 
@@ -67,16 +88,16 @@ Windows 专属方法（WebView2 控制台、本地 SQLite、本机 Codex CLI 登
 | 槽位 | 注册 id/key | 内容 |
 |---|---|---|
 | `sidebar.footer.action`（list） | `id: dsh-token-quota` | 小组件主体：宽栏紧凑条三行（连接状态 · 今日 token / 在用供应商 · 模型 / 元信息）+ rail 图标态；跟随 `sessions.list.current` 切页即时重拉；Popover 与弹层经 `createPortal` 挂 body |
+| `settings.section`（list） | `id: dsh-token-quota`、`order: 20` | 设置页「用量监控」整页：全局设置 + 供应商目录（已添加 / 可添加）+ 逐供应商配置页与当前额度预览；导航文案由 `label` thunk 随 locale 重取 |
 
 宽栏紧凑条支持布局变体 `?qm-strip=A|B|C`（A 三行堆叠，默认；B 状态点锚供应商行 + 元信息分隔线；C 两列网格、今日量右置）用于定稿比较；**定稿后删除未选变体与该开关**。
-| `settings.plugin.item` | `key: dsh-token-quota` | 设置页「插件清单 → 用量监控」卡片 |
 
 依赖声明只列 boot graph 内真实存在的包；Popover 采用官方「贴底展开」定位；详情/设置是居中 overlay。客户端代码由宿主按 rev 重新下发，覆盖文件后刷新浏览器即可生效（无需重新构建插件）。
 
 ## 结构
 
 ```
-lib/index.js      宿主半：settings 注册（schema 按供应商 needs 生成）、轮询调度、当前供应商/当日消耗量折叠、
+lib/index.js      宿主半：行 config（volatile schema，按供应商 needs 生成）、轮询调度、当前供应商/当日消耗量折叠、
                   自动探测接入、/api 路由（含 /rescan）、每供应商 added/addedReason 推导
 lib/detect.js     DSH 路由→供应商识别（凭据类别×地域、官方主机/路径判定、Admin 不套用）与自动填入补丁
 lib/providers.js  数据层：供应商注册表（13 项，元数据驱动 needs/baseUrl/官方端点白名单）+ 全部查询方法
@@ -86,11 +107,15 @@ lib/scan-coordinator.js 扫描协调：目标/完成版本、单实例并发、�
 lib/usage.js      会话步骤用量替换记账（跨小时保留首次报告小时）
 lib/storage.js    本地用量数据（小时桶、保留期、增量合并、写入锁与恢复保护）
 lib/routes.js     自动探测与事件记账共用的供应商路由归属
+lib/legacy-config.js 旧 settings 文档（settings.yaml[.imported]）读取：嵌套字典+标量子集，结构不符整段丢弃
 lib/client.js     客户端半：脚部槽位小组件（sessions.list 跟随当前显示页）/ Popover / 详情页 /
                   设置面板（已添加过滤目录 + 可添加列表 + 标题行重新扫描 + 配置页当前额度预览）
 test/smoke.mjs    数据层冒烟（Mock fetch：全部官方方法 + 端点校验 + 多币种/分页 + CC 重置时间）
 test/detect.mjs   自动探测单元测试（路由/地域/凭据类别/去重/无密钥/手动接管）
+test/harness.mjs  0.1.7 settings 契约的测试替身（行视图 / update / volatile 引用 + 事件）
 test/mock-dsh.mjs 宿主半集成冒烟（Mock ctx + fetch；含 added 推导与 /rescan）
+test/migration.mjs 旧配置迁移（改名 + settings.yaml.imported → 行 config）
+test/legacy-config.mjs 旧文档解析子集与「宁可读不到也不读错」
 test/scan-coordinator.mjs 扫描协调器单测 + 真实装配（版本门禁、手动重扫、发现状态）
 test/client-lifecycle.mjs 客户端请求生命周期（慢请求、超时退避、切页、隐藏、卸载、手动刷新）
 test/usage-saves.mjs 用量落盘去重（相同样本不再写盘）
@@ -112,7 +137,7 @@ test/storage.mjs  本地用量数据存储单元测试
 # link 安装：直接用源码目录（目录需保留）
 dsh plugin --profile web add "link:$(pwd)"
 #   或压缩包安装
-dsh plugin --profile web add "$(pwd)/dsh-token-quota-1.3.0.tgz"
+dsh plugin --profile web add "$(pwd)/dsh-token-quota-1.4.0.tgz"
 ```
 
 ### 从源码安装
@@ -142,18 +167,18 @@ dsh --profile web
 
 ### 从压缩包安装
 
-在源码目录执行 `npm pack`，得到 `dsh-token-quota-1.3.0.tgz`。也可以使用已有的同名安装包。传给 DSH 的文件路径应为绝对路径，避免 profile 工作目录影响相对路径解析。
+在源码目录执行 `npm pack`，得到 `dsh-token-quota-1.4.0.tgz`。也可以使用已有的同名安装包。传给 DSH 的文件路径应为绝对路径，避免 profile 工作目录影响相对路径解析。
 
 Linux / macOS（安装包位于当前目录）：
 
 ```bash
-dsh plugin --profile web add "$(pwd)/dsh-token-quota-1.3.0.tgz"
+dsh plugin --profile web add "$(pwd)/dsh-token-quota-1.4.0.tgz"
 ```
 
 Windows PowerShell：
 
 ```powershell
-$archivePath = (Resolve-Path ./dsh-token-quota-1.3.0.tgz).Path
+$archivePath = (Resolve-Path ./dsh-token-quota-1.4.0.tgz).Path
 dsh plugin --profile web add $archivePath
 ```
 
@@ -166,9 +191,13 @@ dsh plugin --profile web add $archivePath
 
 源码链接安装：在源码目录执行 `git pull --ff-only` 和 `npm ci`，然后重启 DSH 并刷新浏览器。压缩包安装：用新版本安装包的绝对路径重新执行上述 `add` 命令，再重启。
 
+**DSH 0.1.7 起**：配置不再写进 `settings.yaml`，而是本插件 profile 行的 config（`profiles/<profile>/cordis.patch.yml`）。
+升级到 v1.4.0 后首次启动会把旧文档里的 `dsh-token-quota` / `quota-monitor` 两段自动读回并写进行 config（旧文档保留）；
+若行里已有用户配置则不再迁移。运行 `dsh --profile web --dump-config | grep -A5 dsh-token-quota` 可直接看到本行生效配置。
+
 **从旧包名升级（v1.1.1 及更早）**：本插件在 v1.1.2 改名为 `dsh-token-quota`（旧名 `dsh-usage-monitor`，更早为 `dsh-quota-monitor`）。旧包与新包**不要同时保留**：先 `dsh plugin --profile web list --depth 0` 确认旧包存在，再 `dsh plugin --profile web remove <旧包名>`，最后按上述步骤安装新包。首次启动会自动迁移旧数据：用量目录 `<DSH_HOME>/quota-monitor/` → `<DSH_HOME>/dsh-token-quota/`，settings 命名空间 `quota-monitor` → `dsh-token-quota`（含已填密钥；旧命名空间保留，确认无误后可手动清理）。
 
-执行 `dsh plugin --profile web list --depth 0` 应能看到 `dsh-token-quota`；启动后侧边栏底部应出现用量小组件，设置页插件清单中应出现「用量监控」卡片。没有配置密钥或当前会话尚无调用时，空状态属于正常行为。
+执行 `dsh plugin --profile web list --depth 0` 应能看到 `dsh-token-quota`；启动后侧边栏底部应出现用量小组件，设置面板左侧导航里应出现「用量监控设置」一页。没有配置密钥或当前会话尚无调用时，空状态属于正常行为。
 
 
 ## 测试
@@ -196,7 +225,7 @@ node test/storage.mjs    # 本地用量数据存储
 
 ## 已知限制与后续
 
-- 密钥**清除**需直接编辑 `$DSH_HOME/settings.yaml`（设置面板只支持留空不改）
+- 密钥**清除**需直接编辑本插件 profile 行的 config（`$DSH_HOME/profiles/<profile>/cordis.patch.yml` 里 `id: dsh-token-quota` 那一段；界面只支持留空不改）
 - OpenAI / Anthropic 组织与 OpenRouter 账户（Management）供应商依赖 DSH 之外的更高凭据类别 → 不自动填，仅手动；真实账户联调尚未用真实 Admin/Management Key 验证（与上游验证记录一致）
 - Codex（本机 CLI 登录）不注册；OpenCode / Command Code 独立 CLI 直连（不经 DSH 路由）的用法仍不可观测 → 恒候选、当日消耗显示 —
 - Z.ai / 智谱 等仅返回百分比（无任何时刻字段）的行如实标注、不显示重置时间（不推断、不伪造）；Command Code 窗口重置时间为真实 `resetAt`（epoch-毫秒，已复核）
@@ -221,7 +250,7 @@ node scripts/benchmark-storage.mjs   # 1/13 供应商 × 7/90 天的保存耗时
 node scripts/benchmark-runtime.mjs   # /state 延迟、事件循环延迟、查询并发与句柄收尾
 ```
 
-测试包括供应商查询解析、自动探测、存储恢复与跨进程合并、宿主路由与会话隔离、调度取消、用量替换、客户端保存失败，以及 added 推导和重新扫描回归。v1.3.0 起另增：客户端请求生命周期（慢请求不丢结果、并发上限 1、超时退避、切页/隐藏/卸载）、编辑器身份（保存中切换编辑器不清除新草稿、旧测试结果不回写）、阈值一致性、扫描协调版本门禁与手动重扫、用量落盘去重、官方地址集合契约、Windows 目录迁移回落。供应商响应均为模拟数据，不访问真实账户。浏览器测试使用真实 React、插件 HTTP 路由和隔离的数据目录；真实 DSH 的安装及槽位接入另行验收。CI 在 Windows 与 Linux 上运行单元、打包及 Chromium 测试。
+测试包括供应商查询解析、自动探测、存储恢复与跨进程合并、宿主路由与会话隔离、调度取消、用量替换、客户端保存失败，以及 added 推导和重新扫描回归。v1.4.0 起另增：0.1.7 settings 契约（行视图 / volatile 引用 / 写入落行 id）、旧配置迁移（改名段 + `settings.yaml.imported` → 行 config）、旧文档解析子集。v1.3.0 起另增：客户端请求生命周期（慢请求不丢结果、并发上限 1、超时退避、切页/隐藏/卸载）、编辑器身份（保存中切换编辑器不清除新草稿、旧测试结果不回写）、阈值一致性、扫描协调版本门禁与手动重扫、用量落盘去重、官方地址集合契约、Windows 目录迁移回落。供应商响应均为模拟数据，不访问真实账户。浏览器测试使用真实 React、插件 HTTP 路由和隔离的数据目录；真实 DSH 的安装及槽位接入另行验收。CI 在 Windows 与 Linux 上运行单元、打包及 Chromium 测试。
 
 查询切换配置或卸载插件时会取消旧请求；整次查询最长 120 秒，单个 HTTP 请求最长 20 秒。自动扫描共享同一调度入口；已删除会话的索引随宿主删除事件回收。
 

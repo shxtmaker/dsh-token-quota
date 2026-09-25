@@ -13,7 +13,10 @@ window.__ModuleLoader__ = { load({factory}) {
  plugin.apply({locale:{register(ns,locales){dictionary=locales.zh;}},effect(){},slots:{
    inject(name,fn){fn();},register({name},component){slots[name]=component;return ()=>{};}
  }});
- ReactDOM.createRoot(document.getElementById('settings')).render(React.createElement(slots['settings.plugin.item'],{t}));
+ // 0.1.7 契约：设置页是 settings.section 列表项，外壳把它渲染在设置面板内容列（不是弹层），
+ // close 由外壳提供 —— 这里用「清空容器」模拟外壳关闭设置面板。
+ const settingsRoot = ReactDOM.createRoot(document.getElementById('settings'));
+ settingsRoot.render(React.createElement(slots['settings.section'], { t, close: () => settingsRoot.render(null) }));
  ReactDOM.createRoot(document.getElementById('footer')).render(React.createElement(slots['sidebar.footer.action'],{t,wide:!location.search.includes('rail')}));
 }};
 </script><script src="/client.js"></script>

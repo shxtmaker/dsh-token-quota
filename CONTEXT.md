@@ -4,6 +4,10 @@ A DeepSeek Harness (DSH) plugin that displays each LLM supplier's available peri
 
 ## Language
 
+**设置行 (Settings Row)**:
+One profile row = one configuration form since DSH 0.1.7: the row id (`dsh-token-quota`, from the plugin's own `cordis.patch.yml`) is both the settings namespace and the address writes use (`ctx.settings.update(rowId, patch)`). The row's config arrives as a **volatile reference** (`config.get()`), so saving replaces values in place and never remounts the plugin; fields are only writable when the Config schema marks them volatile. The pre-0.1.7 surface (plugin-registered namespaces in `<DSH_HOME>/settings.yaml`, `settings.plugin.item` cards, `ctx.settings.get(ns)`) no longer exists — the old document survives as `settings.yaml.imported` and is migrated into the row on first boot.
+_Avoid_: namespace (0.1.7 起仅指行 id), settings.yaml
+
 **供应商 (Supplier)**:
 An LLM API provider whose quota the plugin queries (DeepSeek, OpenAI, Anthropic, OpenRouter, …).
 _Avoid_: Provider, service, vendor

@@ -14,7 +14,8 @@ import fs, { mkdtempSync, rmSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply } from "../lib/index.js";
+import { apply, Config } from "../lib/index.js";
+import { createCtx } from "./harness.mjs";
 import { loadUsageFile, usageFilePath } from "../lib/storage.js";
 
 const NS = "dsh-token-quota";
@@ -38,10 +39,6 @@ syncBuiltinESMExports();
 const TEST_HOME = mkdtempSync(join(tmpdir(), "qm-usage-saves-"));
 process.env.DSH_HOME = TEST_HOME;
 const usageFile = usageFilePath(TEST_HOME);
-const sessions = new Map();
-const events = [];
-const routes = new Map();
-const updates = [];
 
 const config = {
   intervalSeconds: 3600, // 不触发宿主取数轮询，聚焦记账路径
@@ -49,31 +46,15 @@ const config = {
   suppliers: { deepseek: { enabled: false, apiKey: "sk-test", baseUrl: "https://api.deepseek.com" } },
 };
 
-const scopeValue = () => structuredClone(config);
-let scopeWatch = null; // 插件 apply 时注册的 settings.watch 回调（模拟宿主热重载路径）
-const ctx = {
-  settings: {
-    register: (ns) => {
-      assert.equal(ns, NS);
-      return {
-        get: scopeValue,
-        describe: () => ({ user: {} }),
-        watch: (cb) => { scopeWatch = cb; return () => { scopeWatch = null; }; },
-      };
-    },
-    describe: () => [],
-    update: async (ns, patch) => { updates.push({ ns, patch }); },
-  },
-  get: (name) => (name === "credentials" ? { resolve: async () => null } : undefined),
-  webServer: { register: (route) => { routes.set(route.path, route.handler); return () => routes.delete(route.path); } },
-  on: (name, cb) => { if (name === "session/event") { events.push(cb); return () => {}; } return () => {}; },
-  logger: { info() {}, warn() {}, error() {} },
-};
+// 0.1.7 契约：settings 按行 id 写入，行 config 由 loader 解析成 volatile 引用；
+// 热重载 = 引用就地更新 + loader/volatile-update 事件（不重挂插件）。
+const harness = createCtx({ schema: Config, config });
+const { ctx, routes } = harness;
 
-const dispose = apply(ctx);
+const dispose = apply(ctx, harness.configRef);
 await sleep(80); // 自动探测一轮（无 llm/credentials 接缝 → 只标 detect.at）
 
-const emit = (session, event) => { for (const cb of events) cb(session, event); };
+const emit = (session, event) => harness.emit("session/event", session, event);
 const session = { id: "session-saves" };
 const sample = (tokens) => ({
   type: "assistant/chunk",
@@ -101,14 +82,13 @@ await sleep(2600);
 assert.equal(writes.length, 4, "新 step 必须触发一次保存");
 assert.equal(Object.values(loadUsageFile(usageFile).deepseek).reduce((a, b) => a + b, 0), 150, "总数 = 120 + 30");
 
-// ---- 保留期变化：settings 热重载 → setRetention → dirty 独立生效 ----
-// 走真实宿主路径：宿主热重载后回调 scope.watch，插件内部据此 setRetention(1)。
-// 此时没有任何新事件，仍必须再保存一次（证明 C2 的去重没有吃掉保留期修剪）。
+// ---- 保留期变化：宿主写入行 config → volatile 引用更新 → setRetention → dirty 独立生效 ----
+// 走真实宿主路径：settings.update 改的正是 apply 收到的那个引用（loader 就地提交后发
+// loader/volatile-update）。此时没有任何新事件，仍必须再保存一次（证明 C2 的去重没有吃掉保留期修剪）。
 // 时间线：脏标记 → 每秒 tick 发现 → 2s 防抖 → 冲刷，故等待上界取 4.5s。
 const beforeRetention = writes.length;
-assert.equal(typeof scopeWatch, "function", "插件必须订阅 settings 热重载");
-config.retentionDays = 1;
-scopeWatch(scopeValue());
+await ctx.settings.update(NS, { retentionDays: 1 });
+assert.equal(harness.configRef.get().retentionDays, 1, "写入必须落到插件所读的引用上");
 await sleep(4500);
 assert.ok(writes.length > beforeRetention, "保留期变化必须仍然触发一次保存（setRetention 的 dirty 独立生效）");
 assert.ok(Object.keys(loadUsageFile(usageFile).deepseek || {}).length >= 1, "修剪后仍保留当天数据");

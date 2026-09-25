@@ -348,12 +348,14 @@ test("settings preserve non-secret values and retain the draft on rejected saves
     if (opts?.method === "POST") posts.push(JSON.parse(opts.body));
     return { ok: opts?.method !== "POST", status: 400,
       json: async () => opts?.method === "POST" ? { ok: false, error: "validation rejected" } : data };
-  }, [], "settings.plugin.item");
+  }, [], "settings.section");
   let tree;
   try {
-    await act(async () => { tree = create(React.createElement(Component, { t: (k) => k })); });
-    await act(async () => { tree.root.findByProps({ className: "qm-card-btn" }).props.onClick(); });
-    assert.equal(tree.root.findByProps({ role: "dialog" }).props["aria-modal"], true);
+    // 0.1.7：设置页 section 直接渲染面板本体（无遮罩/对话框语义），外壳传 close 供「关闭设置」用
+    await act(async () => { tree = create(React.createElement(Component, { t: (k) => k, close: () => {} })); });
+    const pageCard = tree.root.findAll((n) => typeof n.props?.className === "string" && n.props.className.includes("qm-settings-page"));
+    assert.equal(pageCard.length, 1);
+    assert.equal(tree.root.findAllByProps({ role: "dialog" }).length, 0);
     await act(async () => { tree.root.findByProps({ className: "qm-page-main" }).props.onClick(); });
     assert.ok(tree.root.findAllByType("input").some((i) => i.props.value === "org-original"));
     await act(async () => { tree.root.findAllByType("button").find((b) => b.children.includes("save")).props.onClick(); });

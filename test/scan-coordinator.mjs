@@ -181,7 +181,7 @@ test("self writes are distinguished from external settings changes", async () =>
 
 // ---------- 真实插件装配：B1/B2/B3 的端到端语义 ----------
 
-/** 最小 Cordis ctx：settings 深合并 + watch 派发 + 可切换的 llm 目录。 */
+/** 最小 Cordis ctx：settings 行 id 深合并 + volatile 更新派发 + 可切换的 llm 目录。 */
 function mountPlugin({ harnessConfig = {}, userLayer = {}, failScan = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), "qm-scan-"));
   const previousHome = process.env.DSH_HOME;
@@ -199,20 +199,18 @@ function mountPlugin({ harnessConfig = {}, userLayer = {}, failScan = false } = 
       else dst[key] = value;
     }
   };
-  let watch = null;
+  // 0.1.7：settings 按行 id 描述/写入，热更新 = 引用就地更新 + loader/volatile-update
+  const volatileUpdate = () => {
+    for (const cb of events.get("loader/volatile-update") ?? []) cb([]);
+  };
   const settings = {
-    register: () => ({
-      get: () => structuredClone(config),
-      watch: (cb) => { watch = cb; return () => { watch = null; }; },
-      describe: () => ({ user: structuredClone(layer) }),
-    }),
-    get: (ns) => (ns === "llm-pi-ai" ? harnessConfig.piAi : undefined),
     describe: () => [
-      { ns: "dsh-token-quota", value: config, user: layer },
+      { ns: "dsh-token-quota", value: structuredClone(config), user: structuredClone(layer), revision: 1 },
       ...(harnessConfig.piAi ? [{ ns: "llm-pi-ai", value: harnessConfig.piAi, user: harnessConfig.piAi }] : []),
     ],
-    update: async (ns, patch) => { updates.push({ ns, patch }); merge(config, patch); merge(layer, patch); watch?.(structuredClone(config)); },
+    update: async (ns, patch) => { updates.push({ ns, patch }); merge(config, patch); merge(layer, patch); volatileUpdate(); },
   };
+  const configRef = { get: () => structuredClone(config) };
   // 扫描必须真的失败：探测函数对 settings.get 异常是容错的（会 fallback 到 ctx.settings），
   // 所以这里让 settings 这个属性访问本身就抛错 —— 注入的是「宿主服务不可用」这一类真实故障。
   const ctx = {
@@ -236,7 +234,7 @@ function mountPlugin({ harnessConfig = {}, userLayer = {}, failScan = false } = 
   // 失败路径的等待/重试窗口缩短（生产为 30s / 5s），集成用例不必等满
   globalThis.__DSH_SCAN_TIMING__ = { manualTimeoutMs: 300, retryAfterFailureMs: 60_000 };
   applyFailure();
-  const dispose = apply(ctx);
+  const dispose = apply(ctx, configRef);
   const readState = () => new Promise((resolve) => {
     routes.get("/api/dsh-token-quota/state")({ method: "GET", headers: {}, url: "/api/dsh-token-quota/state" },
       { writeHead() {}, end(value) { resolve(JSON.parse(value)); } });
@@ -251,8 +249,8 @@ function mountPlugin({ harnessConfig = {}, userLayer = {}, failScan = false } = 
     ctx, config, layer, updates, events, readState, call,
     setPiAi(next) { harnessConfig.piAi = next; },
     setScanFailure(on) { failSwitch.on = on; applyFailure(); },
-    /** 等价于宿主热重载：改配置并派发 watch（插件侧的 runtime.config 随之刷新）。 */
-    updateConfig(patch) { merge(config, patch); watch?.(structuredClone(config)); },
+    /** 等价于宿主写配置：改行 config 并派发 volatile 更新（插件侧读的引用随之刷新）。 */
+    updateConfig(patch) { merge(config, patch); merge(layer, patch); volatileUpdate(); },
     async cleanup() {
       dispose();
       if (previousHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousHome;

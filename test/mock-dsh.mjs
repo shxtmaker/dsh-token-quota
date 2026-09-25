@@ -62,35 +62,27 @@ const harnessUser = {
   },
 };
 
+const mergePatch = (dst, src) => {
+  for (const [k, v] of Object.entries(src)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) mergePatch(dst[k] ??= {}, v);
+    else dst[k] = v;
+  }
+};
+
+// 0.1.7 settings 契约：按行 id 描述/写入；行 config 是 loader 维护的 volatile 引用，
+// 写入后引用就地更新并派发 loader/volatile-update（插件不重挂）。
 const ctx = {
   settings: {
-    register: (ns, schema, opts) => {
-      assert.equal(ns, NS);
-      return {
-        get: () => frozenView(),
-        watch: (cb) => {
-          ctx._watch = cb;
-          return () => {};
-        },
-        describe: () => ({ user: userLayer }),
-      };
-    },
-    get: (ns) => (HARNESS[ns] ? { ...HARNESS[ns] } : undefined),
-    describe: (opts = {}) => [
-      { ns: NS, value: resolved, user: userLayer },
+    describe: () => [
+      { ns: NS, value: resolved, user: userLayer, revision: 1 },
       { ns: "llm-deepseek", value: HARNESS["llm-deepseek"], user: undefined },
       { ns: "llm-pi-ai", value: HARNESS["llm-pi-ai"], user: harnessUser["llm-pi-ai"] },
     ],
     update: async (ns, patch) => {
-      const merge = (dst, src) => {
-        for (const [k, v] of Object.entries(src)) {
-          if (v && typeof v === "object" && !Array.isArray(v)) merge(dst[k] ??= {}, v);
-          else dst[k] = v;
-        }
-      };
-      merge(resolved, patch);
-      merge(userLayer, patch);
-      ctx._watch?.(frozenView());
+      assert.equal(ns, NS, "settings 写入必须落在本行 id");
+      mergePatch(resolved, patch);
+      mergePatch(userLayer, patch);
+      for (const cb of ctx._events["loader/volatile-update"] ?? []) cb([]);
     },
   },
   get: (name) =>
@@ -102,6 +94,8 @@ const ctx = {
   _routes: [],
   _events: {},
 };
+/** apply 的第二参数：模拟 loader 的 volatile 引用（读时取当前生效配置）。 */
+const configRef = { get: () => resolved };
 
 // Mock 供应商服务器（记录调用，供密钥回退断言）
 const calls = [];
@@ -117,7 +111,7 @@ globalThis.fetch = async (url, opts) => {
 const TEST_HOME = mkdtempSync(join(tmpdir(), "qm-mock-home-"));
 process.env.DSH_HOME = TEST_HOME;
 
-const dispose = apply(ctx);
+const dispose = apply(ctx, configRef);
 await new Promise((r) => setTimeout(r, 400)); // 首轮 tick + 自动探测填入
 
 // 模拟真实 DSH 启动时派发 llm/adapters-updated（拓扑变更；不是流量观测信号）

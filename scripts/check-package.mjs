@@ -11,7 +11,7 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url))
 // 运行时模块必须逐个断言：拆分/新增模块后漏打包会让安装版直接跑不起来
 for (const required of [pkg.main, pkg.exports["./client"], pkg.dsh.bundle.patch,
   "lib/routes.js", "lib/storage.js", "lib/scheduler.js", "lib/usage.js", "lib/detect.js",
-  "lib/providers.js", "lib/scan-coordinator.js", "README.md"]) {
+  "lib/providers.js", "lib/scan-coordinator.js", "lib/legacy-config.js", "README.md"]) {
   assert.ok(paths.has(required.replace(/^\.\//, "")), `产物缺少 ${required}`);
 }
 assert.equal(manifest.name, "dsh-token-quota");

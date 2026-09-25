@@ -2,14 +2,13 @@ import { createServer } from "node:http";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply } from "../../lib/index.js";
+import { apply, Config } from "../../lib/index.js";
 
 // 独立宿主数据目录；不读取真实 DSH 配置或供应商凭据。
 const home = mkdtempSync(join(tmpdir(), "qm-browser-"));
 process.env.DSH_HOME = home;
 const routes = new Map();
-let schema, watch;
-let config = { suppliers: { opencode: { enabled: true, orgId: "org-original" } } };
+const events = new Map();
 function merge(a, b) {
   const result = structuredClone(a);
   for (const [key, value] of Object.entries(b)) {
@@ -19,12 +18,26 @@ function merge(a, b) {
   }
   return result;
 }
-const dispose = apply({ settings: {
-  register(ns, s) { schema = s; config = schema(config); return {
-    get: () => config, watch(cb) { watch = cb; return () => {}; }, describe: () => ({ user: config }),
-  }; },
-  get() {}, update: async (ns, patch) => { config = schema(merge(config, patch)); watch?.(config); },
-}, webServer: { register(r) { routes.set(r.path, r.handler); return () => {}; } }, on() { return () => {}; } });
+// 0.1.7 settings 契约：行 id 寻址 + volatile 引用（写入后就地更新并发 loader/volatile-update）。
+const resolveConfig = (raw) => {
+  const parsed = Config(raw);
+  return parsed && typeof parsed.get === "function" ? parsed.get() : parsed;
+};
+let user = { suppliers: { opencode: { enabled: true, orgId: "org-original" } } };
+let config = resolveConfig(user);
+const setUser = (next) => {
+  user = next;
+  config = resolveConfig(user);
+  for (const cb of events.get("loader/volatile-update") ?? []) cb([]);
+};
+const dispose = apply({
+  settings: {
+    describe: () => [{ ns: "dsh-token-quota", value: config, user, revision: 1 }],
+    update: async (ns, patch) => { setUser(merge(user, patch)); },
+  },
+  webServer: { register(r) { routes.set(r.path, r.handler); return () => {}; } },
+  on(name, cb) { (events.get(name) ?? events.set(name, []).get(name)).push(cb); return () => {}; },
+}, { get: () => config });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -76,7 +89,7 @@ const server = createServer(async (req, res) => {
       if (body.settingsDelay !== undefined) settingsDelayMs = Number(body.settingsDelay) || 0;
       if (body.settingsFail !== undefined) settingsFail = !!body.settingsFail;
       if (body.postCount !== undefined) postCount = 0;
-      if (body.config) { config = schema(body.config); watch?.(config); }
+      if (body.config) setUser(body.config);
       if (body.usagePercent !== undefined) usageMock.percent = Number(body.usagePercent) || 0;
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, postCount }));
@@ -84,8 +97,7 @@ const server = createServer(async (req, res) => {
     }
     if (path === "/__suppliers") {
       const body = JSON.parse((await readBody(req)) || "{}");
-      for (const [id, value] of Object.entries(body)) config = schema(merge(config, { suppliers: { [id]: value } }));
-      watch?.(config);
+      for (const [id, value] of Object.entries(body)) setUser(merge(user, { suppliers: { [id]: value } }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
       return;

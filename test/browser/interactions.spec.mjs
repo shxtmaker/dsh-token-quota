@@ -2,8 +2,10 @@ import { test, expect } from "@playwright/test";
 
 test("settings trap keyboard focus, preserve organization, and retain a rejected draft", async ({ page }) => {
   await page.goto("/");
-  const opener = page.locator(".qm-card-btn");
+  // 0.1.7：设置页本身在设置面板内容列；小组件里的「设置」入口仍打开同一面板的弹层形态
+  const opener = page.locator(".qm-strip");
   await opener.click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAttribute("aria-modal", "true");
@@ -12,8 +14,9 @@ test("settings trap keyboard focus, preserve organization, and retain a rejected
   await buttons.last().focus(); await page.keyboard.press("Tab");
   await expect.poll(() => dialog.evaluate((node) => node.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
+  await expect(dialog).toHaveCount(0);
   await opener.click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
   // 目录里可能有多个供应商行：显式点名 OpenCode（strict mode 下不允许多命中）
   await dialog.locator(".qm-page-row", { hasText: "OpenCode" }).getByRole("button", { name: "打开配置" }).click();
   const orgInput = page.getByLabel("org id（可选）", { exact: true });

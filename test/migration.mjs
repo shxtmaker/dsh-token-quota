@@ -1,112 +1,125 @@
-// test/migration.mjs — 插件改名（dsh-usage-monitor → dsh-token-quota）的一次性迁移
+// test/migration.mjs — 旧配置的一次性迁移（改名 + 0.1.7 表单改造）
 // 用法：node test/migration.mjs
 //
-// 覆盖两件事：
-//   1) settings 命名空间 quota-monitor → dsh-token-quota（旧数据保留、不覆盖新配置）
-//   2) 用量目录 <DSH_HOME>/quota-monitor/ → dsh-token-quota/（真实临时目录，见 test/storage.mjs）
+// 覆盖两条来源与各自的守门条件：
+//   1) 旧行（quota-monitor，改名前的 settings 命名空间）仍在 describe() 里 → 整段搬进本行；
+//   2) 0.1.7 harness 把 <DSH_HOME>/settings.yaml 改名成 settings.yaml.imported，
+//      本行当时没激活 → 段只留在这份文档里，升级后必须读回来（密钥都在里面）。
+//   3) 本行已有用户层 → 绝不动；4) 全新安装 → 不写；5) describe 抛异常 → 不写、不崩。
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply } from "../lib/index.js";
+import { apply, Config } from "../lib/index.js";
+import { createCtx } from "./harness.mjs";
 
 const NS = "dsh-token-quota";
 const LEGACY_NS = "quota-monitor";
-
-/** 最小 Cordis ctx：只装 settings / webServer，记录 update 调用。 */
-function makeCtx({ user, legacyUser }) {
-  const updates = [];
-  const ctx = {
-    settings: {
-      register: (ns) => ({
-        get: () => ({}),
-        watch: () => () => {},
-        describe: () => ({ user }),
-      }),
-      describe: () => [
-        { ns: NS, value: user, user },
-        ...(legacyUser === undefined ? [] : [{ ns: LEGACY_NS, value: legacyUser, user: legacyUser }]),
-      ],
-      update: async (ns, patch) => { updates.push({ ns, patch }); },
-    },
-    webServer: { register: () => () => {} },
-    on: () => () => {},
-    get: () => undefined,
-    logger: { info() {}, warn() {}, error() {} },
-  };
-  return { ctx, updates };
-}
+// 迁移默认首发 250ms、失败重试 5 次；测试压到近即时，避免为「放弃重试」等十几秒。
+globalThis.__DSH_MIGRATION_TIMING__ = { initialDelayMs: 5, retryDelayMs: 5, maxAttempts: 2 };
+/** 等迁移定时器跑完并留出余量。 */
+const settle = () => new Promise((r) => setTimeout(r, 120));
 
 const home = mkdtempSync(join(tmpdir(), "qm-migrate-ns-"));
 process.env.DSH_HOME = home;
 const legacySuppliers = { deepseek: { enabled: true, apiKey: "sk-legacy" } };
 
-// 1) 新命名空间为空 + 旧命名空间有用户配置 ⇒ 整段拷到新命名空间，且旧的不动
-{
-  const { ctx, updates } = makeCtx({ user: undefined, legacyUser: { suppliers: legacySuppliers } });
-  const dispose = apply(ctx);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(updates.length, 1, "应恰好触发一次迁移写入");
-  assert.equal(updates[0].ns, NS, "写入目标必须是新命名空间");
-  assert.deepEqual(updates[0].patch, { suppliers: legacySuppliers }, "必须整段拷贝旧用户配置（含密钥）");
-  assert.notEqual(updates[0].ns, LEGACY_NS, "绝不能写回旧命名空间");
-  dispose();
-  console.log("✓ 旧命名空间配置已迁移到新命名空间（旧数据保留）");
+/** 写一份旧 settings 文档（0.1.7 改名后的形态）。 */
+function writeLegacyDocument(text) {
+  writeFileSync(join(home, "settings.yaml.imported"), text, "utf8");
 }
 
-// 2) 新命名空间已有用户配置 ⇒ 不迁移、不覆盖
+// 1) 旧行仍有用户配置 ⇒ 整段拷到本行，且不写回旧行
 {
-  const { ctx, updates } = makeCtx({ user: { suppliers: { deepseek: { apiKey: "sk-new" } } }, legacyUser: { suppliers: legacySuppliers } });
-  const dispose = apply(ctx);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(updates.length, 0, "新命名空间已有配置时不得覆盖");
+  const { ctx, settings, configRef } = createCtx({
+    schema: Config,
+    config: {},
+    foreign: [{ ns: LEGACY_NS, value: { suppliers: legacySuppliers }, user: { suppliers: legacySuppliers } }],
+  });
+  const dispose = apply(ctx, configRef);
+  await settle();
+  assert.equal(settings.writes.length, 1, "应恰好触发一次迁移写入");
+  assert.equal(settings.writes[0].ns, NS, "写入目标必须是本行");
+  assert.deepEqual(settings.writes[0].patch, { suppliers: legacySuppliers }, "必须整段拷贝旧用户配置（含密钥）");
   dispose();
-  console.log("✓ 新命名空间已有配置：不迁移、不覆盖");
+  console.log("✓ 旧行配置已迁移到本行（旧数据保留）");
 }
 
-// 3) 没有旧命名空间（全新安装）⇒ 不写入
+// 2) 旧文档（settings.yaml.imported）里的段 ⇒ 读回来并写入本行
 {
-  const { ctx, updates } = makeCtx({ user: undefined, legacyUser: undefined });
-  const dispose = apply(ctx);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(updates.length, 0, "全新安装不该产生迁移写入");
+  writeLegacyDocument([
+    "# 旧 settings 文档（改名后）",
+    "quota-monitor:",
+    "  suppliers:",
+    "    deepseek:",
+    "      apiKey: sk-doc-legacy",
+    "      enabled: true",
+    "dsh-token-quota:",
+    "  intervalSeconds: 120",
+    "  suppliers:",
+    "    opencode:",
+    "      apiKey: \"sk-quoted:with-colon\"",
+    "      enabled: true",
+    "unrelated-section:",
+    "  keep: true",
+    "",
+  ].join("\n"));
+  const { ctx, settings, configRef } = createCtx({ schema: Config, config: {} });
+  const dispose = apply(ctx, configRef);
+  await settle();
+  assert.equal(settings.writes.length, 1, "旧文档里的段应恰好迁移一次");
+  assert.deepEqual(settings.writes[0].patch, {
+    intervalSeconds: 120,
+    suppliers: {
+      deepseek: { apiKey: "sk-doc-legacy", enabled: true },
+      opencode: { apiKey: "sk-quoted:with-colon", enabled: true },
+    },
+  }, "新段覆盖旧段，未涉及的行不进 patch");
+  dispose();
+  rmSync(join(home, "settings.yaml.imported"), { force: true });
+  console.log("✓ settings.yaml.imported 里的旧段已迁移到本行");
+}
+
+// 3) 本行已有用户配置 ⇒ 不迁移、不覆盖
+{
+  const { ctx, settings, configRef } = createCtx({
+    schema: Config,
+    config: {},
+    user: { suppliers: { deepseek: { apiKey: "sk-new" } } },
+    foreign: [{ ns: LEGACY_NS, value: { suppliers: legacySuppliers }, user: { suppliers: legacySuppliers } }],
+  });
+  const dispose = apply(ctx, configRef);
+  await settle();
+  assert.equal(settings.writes.length, 0, "本行已有配置时不得覆盖");
+  dispose();
+  console.log("✓ 本行已有配置：不迁移、不覆盖");
+}
+
+// 4) 全新安装（既无旧行，也无旧文档）⇒ 不写入
+{
+  const { ctx, settings, configRef } = createCtx({ schema: Config, config: {} });
+  const dispose = apply(ctx, configRef);
+  await settle();
+  assert.equal(settings.writes.length, 0, "全新安装不该产生迁移写入");
   dispose();
   console.log("✓ 全新安装：无迁移写入");
 }
 
-// 4) 旧命名空间存在但为空对象 ⇒ 不写入
+// 5) describe 抛异常 ⇒ 不写入、不崩（重试后留痕 warn）
 {
-  const { ctx, updates } = makeCtx({ user: undefined, legacyUser: {} });
-  const dispose = apply(ctx);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(updates.length, 0, "旧命名空间为空对象时不该写入");
-  dispose();
-  console.log("✓ 旧命名空间为空：不写入");
-}
-
-
-// 5) describe 抛异常 ⇒ 不迁移、不崩，且走 warn（迁移失败必须留痕）
-{
-  const updates = [];
-  const ctx = {
-    settings: {
-      register: () => ({ get: () => ({}), watch: () => () => {}, describe: () => ({ user: undefined }) }),
-      describe: () => { throw new Error("settings backend down"); },
-      update: async (ns, patch) => { updates.push({ ns, patch }); },
-    },
-    webServer: { register: () => () => {} },
-    on: () => () => {},
-    get: () => undefined,
-    logger: { info() {}, warn() { warned.push(1); }, error() {} },
+  const warnings = [];
+  const { ctx, configRef } = createCtx({ schema: Config, config: {}, logger: { info() {}, warn: (m) => warnings.push(m), error() {} } });
+  ctx.settings = {
+    describe: () => { throw new Error("settings backend down"); },
+    update: async () => { throw new Error("must not write"); },
   };
-  const warned = [];
-  const dispose = apply(ctx);
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(updates.length, 0, "describe 失败时不得写入");
-  assert.equal(warned.length, 1, "迁移失败必须 warn 留痕，不能静默");
+  const dispose = apply(ctx, configRef);
+  await settle();
+  assert.equal(warnings.length, 1, "始终不可描述时必须 warn 留痕，不能静默");
+  assert.match(warnings[0], /跳过旧配置迁移/);
   dispose();
-  console.log("✓ describe 失败：不写入、走 warn 留痕");
+  console.log("✓ describe 不可用：不写入、走 warn 留痕");
 }
 
 rmSync(home, { recursive: true, force: true });
-console.log("\n改名迁移测试全部通过 ✔");
+console.log("\n改名/表单迁移测试全部通过 ✔");
