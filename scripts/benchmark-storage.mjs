@@ -1,7 +1,7 @@
 // scripts/benchmark-storage.mjs — 存储层基准（可重复、按需运行，不进入默认测试）
 //
 // 用法：
-//   node scripts/benchmark-storage.mjs            # 默认：1/13 供应商 × 7/90 天
+//   node scripts/benchmark-storage.mjs            # 默认：1/7 供应商 × 7/90 天（7 = 当前查询白名单规模）
 //   node scripts/benchmark-storage.mjs --quick    # 快速档（样本更少，改动前后自查用）
 //   node scripts/benchmark-storage.mjs --json     # 只输出 JSON（供报告收集）
 //
@@ -19,7 +19,7 @@ const args = new Set(process.argv.slice(2));
 const quick = args.has("--quick");
 const jsonOnly = args.has("--json");
 const SAMPLES = quick ? 5 : 10;
-const SUPPLIER_COUNTS = [1, 13];
+const SUPPLIER_COUNTS = [1, 7]; // 7 = 当前查询白名单的供应商数量
 const HISTORY_DAYS = [7, 90];
 
 const log = (...a) => { if (!jsonOnly) console.log(...a); };

@@ -54,14 +54,19 @@ test("real provider parsing keeps unknown Command Code resets empty and valid Op
   await page.locator(".qm-pop").getByRole("button", { name: "详情", exact: true }).click();
   const detail = page.getByRole("dialog", { name: "供应商限额明细", exact: true });
   const entries = detail.locator(".qm-col").filter({ hasText: "Command Code" }).locator(".qm-card-item");
-  await expect(entries).toHaveCount(3);
+  // 本轮：月度进度改为「有效订阅 + 有效账期 + 有效公开规则」同时成立才算；
+  // 本夹具没有有效订阅与公开规则，因此只展示两个服务端窗口
+  // （旧版静态套餐分母已删除，不得再出现第三条「月额度」）
+  await expect(entries).toHaveCount(2);
   await expect(entries.nth(0).locator(".ci-name span").last()).toHaveText("—");
   await expect(entries.nth(1).locator(".ci-name span").last()).toHaveText("—");
   await expect(entries.nth(0)).toContainText("未提供重置时刻");
-  await expect(entries.nth(2).locator(".ci-name span").last()).toContainText(/4h59m|5h00m/);
   await expect(detail.locator(".qm-col").filter({ hasText: "OpenCode" })).toContainText(/4h59m|5h00m/);
   await expect(detail).not.toContainText("1月1日");
   await expect(detail).not.toContainText("NaN");
+  // 占位/非法重置时刻不得被渲染成任何日历日期
+  await expect(entries.nth(0)).not.toContainText("1月1日");
+  await expect(entries.nth(1)).not.toContainText("1月1日");
 });
 test("restored details show supplier columns and a bounded history table before settings", async ({ page }) => {
   const fixture = displayFixture();

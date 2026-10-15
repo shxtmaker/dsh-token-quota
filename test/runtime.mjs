@@ -49,7 +49,8 @@ test("state reports the last successful query time and never substitutes a faile
   let queryResult = { state: "err", error: { code: "network", message: "offline" }, entries: [] };
   const success = { state: "ok", entries: [{ type: "balance", remain: "10", unit: "CNY" }], headline: { kind: "amt", amt: "¥10" } };
   t.mock.method(Date, "now", () => time);
-  t.mock.method(PROVIDERS.deepseek, "query", async () => queryResult);
+  // 方法级调度：替换注册表上的方法实现（唯一公开接缝）
+  t.mock.method(PROVIDERS.deepseek.methods, "deepseek.balance.api-key", async () => queryResult);
   const harness = createCtx({ schema: Config, config: {
     suppliers: { deepseek: { enabled: true, apiKey: "saved" } },
   } });

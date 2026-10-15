@@ -18,17 +18,17 @@ test("Command Code zero reset placeholders never display January 1", async (t) =
     });
     const result = await PROVIDERS.commandcode.query({ apiKey: "fixture", warnPct: 80, critPct: 95 });
     assert.equal(result.state, "ok");
-    const windows = result.entries.filter(entry => !entry.name.startsWith("月额度"));
-    assert.equal(windows.length, 2);
+    // 服务端窗口是真实报告值；月度进度已改为「公开规则口径」，占位时刻不得变成 1970 年
+    const windows = result.entries.filter((entry) => entry.kind === "win");
+    assert.equal(windows.length, 2, "5h / 周窗口各一条");
     for (const entry of windows) {
       assert.equal(entry.resetAt, null, `${resetAt}: reset epoch must be unknown`);
       assert.equal(entry.reset, "—", `${resetAt}: missing reset must not display January 1`);
       assert.match(entry.note, /未提供重置时刻/);
     }
-    const monthly = result.entries.find(entry => entry.name.startsWith("月额度"));
-    assert.equal(monthly.resetAt, null);
-    assert.equal(monthly.reset, "—");
-    assert.match(monthly.note, /周期结束未公布/);
+    // 月度进度：账期结束是占位/非法值时不得输出进度（宁可暂不可得）
+    assert.equal(result.entries.some((entry) => entry.name.startsWith("月度进度")), false,
+      `${resetAt}: 无效账期不得输出月度进度`);
     t.mock.restoreAll();
   }
 });

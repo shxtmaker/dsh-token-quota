@@ -4,30 +4,36 @@ import { PROVIDERS } from "../lib/providers.js";
 
 test("OpenCode rejects a successful HTTP response without recognized data", async (t) => {
   t.mock.method(globalThis, "fetch", async () => ({ ok: true, text: async () => "{}" }));
-  const result = await PROVIDERS.opencode.query({ apiKey: "fake" });
-  assert.equal(result.state, "err");
-  assert.equal(result.error.code, "no-data");
+  // 只跑滚动窗口方法（allowance 需要另一把凭据，属于独立方法）
+  const { runMethod } = await import("../lib/providers.js");
+  const result = await runMethod("opencode", "opencode.rolling-window.api-key", { apiKey: "fake" });
+  // 200 + 空对象：结构不兼容（不是「用量为 0」），必须明确归类且不产出条目
+  assert.equal(result.status, "schema-mismatch");
+  assert.deepEqual(result.items, []);
+  assert.match(result.error.message, /结构|usage|不匹配/);
 });
 
-test("cancellation reaches the HTTP request and prevents subsequent pages", async (t) => {
+test("cancellation reaches the HTTP request and produces no fabricated result", async (t) => {
   const controller = new AbortController();
   let calls = 0;
-  t.mock.method(globalThis, "fetch", async (url, { signal }) => {
+  t.mock.method(globalThis, "fetch", async (url, { signal } = {}) => {
     calls++;
     return new Promise((resolve, reject) => {
+      if (!signal) return reject(new Error("no signal"));
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
   });
-  const result = PROVIDERS["openai-org"].query({ apiKey: "fake" }, { signal: controller.signal });
+  const { runMethod } = await import("../lib/providers.js");
+  const pending = runMethod("deepseek", "deepseek.balance.api-key", { apiKey: "fake" }, { signal: controller.signal });
   controller.abort();
-  assert.equal((await result).state, "err");
-  assert.equal(calls, 2); // 并发用量和费用各一个请求，没有后续分页。
+  // 取消必须原样上抛（由调度器丢弃结果），绝不吞成一个「失败但看起来正常」的结果
+  await assert.rejects(pending);
+  assert.equal(calls, 1);
 });
 
-// ---- C3：官方地址策略只有一个事实来源（探测可采纳地址 ≡ 查询可使用的基础地址）----
+// ---- 官方地址策略只有一个事实来源（探测可采纳地址 ≡ 查询可使用的基础地址）----
 test("every official supplier accepts exactly its declared hosts/base paths and rejects the rest without network calls", async (t) => {
-  const { OFFICIAL_ENDPOINTS, OFFICIAL_HOSTS } = await import("../lib/providers.js");
-  const { isOfficialBaseUrl } = await import("../lib/providers.js");
+  const { OFFICIAL_ENDPOINTS, OFFICIAL_HOSTS, isOfficialBaseUrl } = await import("../lib/providers.js");
   // 任何被拒绝的地址都不得触发网络调用
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => { calls++; return { ok: true, text: async () => "{}" }; });
@@ -65,13 +71,21 @@ test("every official supplier accepts exactly its declared hosts/base paths and 
     const before = calls;
     const result = await PROVIDERS[id].query({ apiKey: "fake", baseUrl: `https://${otherHost}` });
     assert.equal(result.state, "err", `${id} 使用非法地址必须直接失败`);
-    // 单端点供应商报 endpoint；Admin 供应商（用量 + 费用两路合并）报 partial
-    assert.ok(["endpoint", "partial"].includes(result.error.code),
-      `${id} 非法地址应报端点错误（实际 ${result.error.code}），不得是网络错误`);
+    assert.equal(result.status, "schema-mismatch", `${id} 非法地址应报端点不匹配（实际 ${result.status}）`);
     assert.match(result.error.message, /Base URL/, `${id} 错误信息必须指出是地址问题`);
     assert.equal(calls, before, `${id} 非法地址不得触发任何网络调用`);
   }
   // 私有兼容来源没有官方白名单：它们的安全边界另行处理（只要求安全 HTTPS 形态）
   assert.equal(OFFICIAL_ENDPOINTS.opencode, undefined);
   assert.equal(OFFICIAL_ENDPOINTS.commandcode, undefined);
+  assert.equal(OFFICIAL_ENDPOINTS.opendesign, undefined);
+});
+
+// ---- 被排除厂商不在端点策略中（不会因地址策略残留而被重新接入）----
+test("excluded vendors have no endpoint policy and no registry entry", async () => {
+  const { OFFICIAL_ENDPOINTS, PROVIDERS: registry } = await import("../lib/providers.js");
+  for (const id of ["openai-org", "anthropic-org", "moonshot-cn", "moonshot-intl", "zai", "zai-cn", "minimax", "minimax-cn"]) {
+    assert.equal(OFFICIAL_ENDPOINTS[id], undefined, `${id} 不得残留端点策略`);
+    assert.equal(id in registry, false, `${id} 不得残留注册项`);
+  }
 });

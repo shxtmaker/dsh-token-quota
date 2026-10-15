@@ -1,3 +1,48 @@
+# 验证报告
+
+## v2.1.0 供应商查询迭代（范围收敛版）
+
+本轮验证记录见 [供应商迭代执行记录](provider-upgrade-progress.md) 与
+[迁移与回滚说明](provider-upgrade-migration.md)。要点摘录：
+
+| 项目 | 值 |
+| --- | --- |
+| 操作系统 | Ubuntu 26.04.1 LTS（Linux 7.0.0-38-generic，x86_64） |
+| Node.js / npm | v26.10.0 / 11.19.1 |
+| 数据目录 | 测试使用独立 `mkdtemp` 临时 `DSH_HOME`，不读写真实 `~/.dsh` |
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm test` | 95 个顶层测试项，95 通过、0 失败 |
+| `npm run test:browser` | 25 个 Chromium 测试全部通过 |
+| `npm run test:pack` | 通过：65 个文件、237,398 字节 |
+| `npm run test:desktop` | **未执行**：需要 Windows 安装版宿主，本机为 Linux |
+| `npm run test:lifecycle` | **未执行**：同上（需 `--app` 指向安装版宿主） |
+
+真实账户只读对照（一次，使用 DSH 已配置的授权凭据，未打印密钥）：
+
+| 方法 | 结果 |
+| --- | --- |
+| `deepseek.balance.api-key` | 通过：返回账户多币种余额 |
+| `opencode.rolling-window.api-key` | 通过：返回 5h／周／月窗口百分比与重置时刻 |
+| `commandcode.windows.api-key` | 通过：返回 5h／周窗口（cap/used/resetAt） |
+| `commandcode.monthly.public-rule` | 通过：官网公开规则读取成功并算出月度进度（`basis=public-rule`） |
+
+未接真实账户的方法（OpenRouter 全部、Fireworks 月消费、四个控制台方法）状态为
+「已实现，未真实账户验证」——本机未配置对应凭据或未在宿主机器完成控制台登录。
+
+基准数值（`node scripts/benchmark-storage.mjs`，7 = 当前查询白名单规模）：
+
+```text
+保存  7 供应商 /  7 天：  32012 B  p50 1.248 ms  p95 1.610 ms
+保存  7 供应商 / 90 天： 408500 B  p50 18.680 ms p95 22.629 ms
+今日统计（2160 桶）：24 键 1.95 µs/次 vs 旧式遍历 227.35 µs/次（116.5×）
+```
+
+以上为本机合成负载，不代表真实 DSH 服务器或真实会话性能。
+
+---
+
 # 局部重构验证报告（R1–R6）
 
 后续 v2.0.4 重置时间修复的验证记录见 [重置时间修复执行记录](reset-time-fix-execution.md)。

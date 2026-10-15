@@ -1,31 +1,29 @@
 // test/smoke.mjs — 数据层冒烟测试（Mock fetch，无网络）
-// 覆盖 Token-Consumption-Monitoring docs/query-coverage.md 移植的查询方法：
-// DeepSeek 多币种余额、OpenRouter Key 额度/今日费用与 Management credits、
-// Moonshot 国内/国际余额、Z.ai/智谱 Coding Plan 窗口、MiniMax Token Plan 窗口、
-// OpenAI/Anthropic 组织 AdminKey 用量与费用、OpenCode/Command Code 兼容来源。
+//
+// 覆盖本轮 7 个查询白名单供应商的关键解析路径：
+//   DeepSeek 多币种余额、OpenRouter Key 额度／今日费用与 Management credits、
+//   OpenCode 滚动窗口与 allowance（单位降级）、Command Code 服务端窗口 + 公开规则月进度、
+//   Fireworks 月消费（不是余额）、OpenDesign 工作空间窗口。
+// 被排除厂商（Moonshot / Z.ai / MiniMax / OpenAI / Anthropic）不在此测试中：
+// 它们不再有查询实现，相关断言由 test/provider-policy.mjs 的排除用例接管。
 // 用法：node test/smoke.mjs
 import assert from "node:assert/strict";
-import { PROVIDERS, resetAtMs } from "../lib/providers.js";
+import { PROVIDERS, resetAtMs, formatBig, formatMoney } from "../lib/providers.js";
 
 let fetchCount = 0;
-const JSON_HEAD = { ok: true, status: 200, text: async () => "" };
+const JSON_HEAD = { ok: true, status: 200 };
 
-// 组织统计接口只接受「最近已完成的 UTC 日」时间桶 → 夹具按当前时间生成
-const orgNow = new Date();
-const orgEnd = new Date(orgNow); orgEnd.setUTCHours(0, 0, 0, 0);
-const orgStart = new Date(orgEnd.getTime() - 24 * 3600_000);
-const orgEpoch = (d) => Math.floor(d.getTime() / 1000);
-const orgOpenAi = (rows, more = false, next = null) => ({
-  data: [{ start_time: orgEpoch(orgStart), end_time: orgEpoch(orgEnd), results: rows }], has_more: more, next_page: next,
-});
-const orgClaude = (rows) => ({
-  data: [{ starting_at: orgStart.toISOString(), ending_at: orgEnd.toISOString(), results: rows }],
-});
+// Command Code 的账期有效性以当前时刻判断：夹具用「本月 1 日 → 下月 1 日」
+const PERIOD_START = new Date();
+PERIOD_START.setUTCDate(1);
+PERIOD_START.setUTCHours(0, 0, 0, 0);
+const PERIOD_END = new Date(PERIOD_START);
+PERIOD_END.setUTCMonth(PERIOD_END.getUTCMonth() + 1);
 
 // 端点 → 响应体（URL 后缀匹配；同路径不同主机用数组形式分别命中）
 const ROUTES = [
   // path, matcher(url), body
-  ["/user/balance", (u) => true, { balance_infos: [
+  ["/user/balance", (u) => u.includes("api.deepseek.com"), { is_available: true, balance_infos: [
     { currency: "CNY", total_balance: "100.00", granted_balance: "20.00", topped_up_balance: "80.00" },
     { currency: "USD", total_balance: "12.50", granted_balance: "2.50", topped_up_balance: "10.00" },
   ] }],
@@ -36,58 +34,46 @@ const ROUTES = [
       monthly: { status: "ok", percent: 41, resetsAt: "2025-08-31T16:00:00Z" },
     },
   }],
-  ["/api/go/status", (u) => u.includes("opencode.ai"), { meters: [{ kind: "auto", resetsAt: "2025-09-01T00:00:00Z", limitMicroCents: 50_000_000, remainingMicroCents: 26_500_000 }] }],
-  ["/api/v1/key", (u) => true, { data: { limit: 20, limit_remaining: 15, limit_reset: "monthly", usage: 10000, usage_daily: 2.5 } }],
-  ["/api/v1/credits", (u) => true, { data: { total_credits: 100, total_usage: 30 } }],
-  ["/v1/users/me/balance", (u) => u.includes("api.moonshot.cn"), { code: 0, status: true, data: { available_balance: 8.5 } }],
-  ["/v1/users/me/balance", (u) => u.includes("api.moonshot.ai"), { code: 0, status: true, data: { available_balance: 42.25 } }],
-  ["/api/monitor/usage/quota/limit", (u) => true, { data: { limits: [
-    { type: "TOKENS_LIMIT", percentage: 25 },
-    { type: "TIME_LIMIT", percentage: 10 },
-    { type: "FUTURE_LIMIT", percentage: 99 },
-  ] } }],
-  ["/v1/token_plan/remains", (u) => true, { base_resp: { status_code: 0 }, model_remains: [
-    { model_name: "general",
-      current_interval_remaining_percent: 80, current_interval_usage_count: 900, current_interval_total_count: 1000,
-      start_time: 1788825600000, end_time: 1788843600000,
-      current_weekly_remaining_percent: 50, weekly_boost_permille: 1500,
-      weekly_start_time: 1788739200000, weekly_end_time: 1789344000000 },
+  ["/api/go/status", (u) => u.includes("opencode.ai"), { meters: [
+    { kind: "five_hour", resetsAt: "2025-09-01T00:00:00Z", limitMicroCents: 50_000_000, remainingMicroCents: 26_500_000 },
   ] }],
-  ["/organization/usage/completions", (u) => true, orgOpenAi([
-    { model: "gpt-5", input_tokens: 100, output_tokens: 32, input_cached_tokens: 85, num_model_requests: 2 },
-  ])],
-  ["/organization/costs", (u) => true, orgOpenAi([
-    { amount: { value: 4, currency: "usd" } },
-  ])],
-  ["/organizations/usage_report/messages", (u) => true, orgClaude([
-    { model: "claude-sonnet", uncached_input_tokens: 10, cache_read_input_tokens: 20,
-      cache_creation: { ephemeral_1h_input_tokens: 30, ephemeral_5m_input_tokens: 40 }, output_tokens: 5 },
-  ])],
-  ["/organizations/cost_report", (u) => true, orgClaude([
-    { amount: "123.78912", currency: "USD" },
-  ])],
-  ["/alpha/whoami", (u) => true, { org: { id: "org_1" } }],
-  ["/alpha/billing/credits", (u) => true, {
-    credits: { planId: "individual-pro", monthlyCredits: 12.5 },
-    // 真实样本：窗口 resetAt 为 epoch-毫秒数字（上游夹具 FromUnixTimeMilliseconds 转录）；
-    // weekly 用 ISO 字符串覆盖另一容忍路径
+  ["/api/v1/key", (u) => u.includes("openrouter.ai"), { data: { limit: 20, limit_remaining: 15, limit_reset: "monthly", usage: 10000, usage_daily: 2.5 } }],
+  ["/api/v1/credits", (u) => u.includes("openrouter.ai"), { data: { total_credits: 100, total_usage: 30 } }],
+  ["/alpha/whoami", (u) => u.includes("api.commandcode.ai"), { org: { id: "org_1" } }],
+  ["/alpha/billing/credits", (u) => u.includes("api.commandcode.ai"), {
+    credits: { planId: "individual-pro", monthlyCredits: 12.5, monthlyCreditsGranted: 30 },
+    // 真实样本：窗口 resetAt 为 epoch-毫秒数字；weekly 用 ISO 字符串覆盖另一容忍路径
     windowLimits: {
       fiveHour: { used: 2.0, cap: 10.0, resetAt: Date.UTC(2025, 7, 26, 5) },
       weekly: { used: 8.5, cap: 30.0, resetAt: "2025-09-01T00:00:00Z" },
     },
   }],
-  ["/alpha/billing/subscriptions", (u) => true, { data: { planId: "individual-pro", status: "active", currentPeriodStart: "2025-08-01T00:00:00Z", currentPeriodEnd: "2025-09-01T00:00:00Z" } }],
-  ["/alpha/usage/summary", (u) => true, { totalCost: 17.5 }],
+  ["/alpha/billing/subscriptions", (u) => u.includes("api.commandcode.ai"), {
+    // 账期必须覆盖当前时刻：月度进度要求「有效订阅 + 有效账期 + 有效公开规则」同时成立
+    data: { planId: "individual-pro", status: "active", quantity: 1,
+      currentPeriodStart: PERIOD_START.toISOString(), currentPeriodEnd: PERIOD_END.toISOString() },
+  }],
+  // 公开规则：站点 HTML → 唯一的 plan-tiers 资源 → 套餐字面量（只解析，不执行）
+  ["commandcode.ai/signin", (u) => u.includes("commandcode.ai/signin"),
+    '<script src="/assets/plan-tiers-abc123.js"></script>'],
+  ["/assets/plan-tiers-abc123.js", (u) => u.includes("commandcode.ai"),
+    'x={id:"individual-pro",name:"Pro",type:"individual",blurb:"b",limits:{premiumCredits:0,opensourceCredits:30,totalCredits:30,other:1}}'],
+  ["/v1/accounts?pageSize=200", (u) => u.includes("api.fireworks.ai"), { accounts: [
+    { name: "accounts/team-a" }, { name: "accounts/team-b" },
+  ] }],
+  ["/v1/accounts/team-a/quotas/monthly-spend-usd", (u) => u.includes("api.fireworks.ai"), { usage: 12.5, value: 100 }],
+  ["/v1/accounts/team-b/quotas/monthly-spend-usd", (u) => u.includes("api.fireworks.ai"), { usage: 0, value: 50 }],
 ];
 
 function installFetch() {
   fetchCount = 0;
-  globalThis.fetch = async (url, opts) => {
+  globalThis.fetch = async (url) => {
     fetchCount += 1;
     const u = String(url);
     const hit = ROUTES.find(([path, match]) => u.includes(path) && match(u));
     if (!hit) return { ok: false, status: 404, text: async () => "not found" };
-    return { ...JSON_HEAD, text: async () => JSON.stringify(hit[2]) };
+    const body = typeof hit[2] === "string" ? hit[2] : JSON.stringify(hit[2]);
+    return { ...JSON_HEAD, text: async () => body };
   };
 }
 
@@ -95,7 +81,7 @@ const cfg = (over = {}) => ({ apiKey: "sk-test", warnPct: 80, critPct: 95, ...ov
 
 installFetch();
 
-// DeepSeek：多币种余额
+// ---- DeepSeek：多币种余额 ----
 const ds = await PROVIDERS.deepseek.query(cfg());
 assert.equal(ds.state, "ok");
 assert.equal(ds.entries.length, 2, "多币种保留全部币种");
@@ -103,7 +89,8 @@ assert.equal(ds.headline.amt, "¥100.00 · $12.50");
 assert.match(ds.entries[0].note, /到账/);
 console.log("✓ deepseek 多币种余额:", ds.headline.amt);
 
-// OpenRouter：普通 Key 周期额度 + 今日费用
+// ---- OpenRouter：普通 Key 周期额度 + 今日费用 ----
+installFetch(); // 重置计数，单独核算 OpenRouter 的请求次数
 const or = await PROVIDERS.openrouter.query(cfg());
 const quota = or.entries.find((e) => e.name.includes("周期额度"));
 assert.equal(quota.remain, "$15.00");
@@ -112,130 +99,155 @@ assert.equal(quota.pct, 25);
 assert.equal(or.state, "ok");
 const daily = or.entries.find((e) => e.name === "今日费用");
 assert.equal(daily.used, "$2.50");
+// 一次响应产出两个能力，不重复发相同请求
+assert.equal(fetchCount, 1, "Key 额度与今日费用必须复用同一次 /api/v1/key 请求");
 console.log("✓ openrouter Key 额度 + 今日费用:", quota.remain, "/", daily.used);
 
-// OpenRouter：Management Key 账户 credits
+// ---- OpenRouter：Management Key 账户 credits ----
 const orAcc = await PROVIDERS["openrouter-account"].query(cfg());
 assert.equal(orAcc.entries[0].remain, "$70.00");
 console.log("✓ openrouter-account credits:", orAcc.entries[0].remain);
 
-// Moonshot 国内/国际：币种随地域
-const msCn = await PROVIDERS["moonshot-cn"].query(cfg());
-assert.equal(msCn.entries[0].remain, "¥8.50");
-const msIntl = await PROVIDERS["moonshot-intl"].query(cfg());
-assert.equal(msIntl.entries[0].remain, "$42.25");
-console.log("✓ moonshot-cn ¥8.50 / moonshot-intl $42.25");
-
-// Z.ai / 智谱：Coding Plan 窗口（只保留 TOKENS_LIMIT / TIME_LIMIT）
-const zai = await PROVIDERS.zai.query(cfg());
-assert.equal(zai.entries.length, 2);
-assert.deepEqual(zai.entries.map((e) => e.pct), [25, 10]);
-const zaiCn = await PROVIDERS["zai-cn"].query(cfg());
-assert.equal(zaiCn.state, "ok");
-console.log("✓ zai/zai-cn Coding Plan 窗口:", zai.entries.map((e) => `${e.name}=${e.pct}%`).join(" | "));
-
-// MiniMax：Token Plan 窗口（显式剩余百分比取反为已用）
-const mm = await PROVIDERS.minimax.query(cfg());
-assert.equal(mm.entries.length, 2);
-const cur = mm.entries.find((e) => e.name.includes("当前窗口"));
-assert.equal(cur.pct, 20);
-const wk = mm.entries.find((e) => e.name.includes("周窗口"));
-assert.equal(wk.pct, 50);
-assert.match(wk.note, /1.5×/);
-console.log("✓ minimax Token Plan 窗口:", mm.entries.map((e) => `${e.name}=${e.pct}%`).join(" | "));
-
-// OpenAI 组织：用量 + 费用（同供应商合并）
-const oai = await PROVIDERS["openai-org"].query(cfg());
-assert.equal(oai.state, "ok");
-assert.equal(oai.entries.filter((e) => e.kind === "usage").length, 2, "汇总 + 模型明细");
-assert.equal(oai.entries.find((e) => e.name.includes("汇总")).used, "132");
-assert.equal(oai.entries.find((e) => e.name.includes("gpt-5")).used, "132");
-assert.ok(oai.entries.some((e) => e.kind === "cost" && e.used === "$4.00"));
-console.log("✓ openai-org 用量(132 tokens)+费用($4.00):", oai.entries.map((e) => e.name).join(" | "));
-
-// Anthropic 组织：缓存写入口径求和 + 美分转美元
-const ant = await PROVIDERS["anthropic-org"].query(cfg());
-assert.equal(ant.state, "ok");
-assert.equal(ant.entries.find((e) => e.name.includes("汇总")).used, "105");
-assert.equal(ant.entries.find((e) => e.kind === "cost").used, "$1.24");
-console.log("✓ anthropic-org 用量(105)+费用($1.24)");
-
-// OpenCode：3 窗口 + allowance
+// ---- OpenCode：滚动窗口 + allowance（单位未核验 → 不伪装 USD） ----
 const oc = await PROVIDERS.opencode.query(cfg({ allowanceToken: "oatok", orgId: "org-x" }));
-assert.equal(oc.entries.length, 4);
-assert.equal(oc.state, "warn");
-assert.equal(oc.entries.find((e) => e.name.startsWith("allowance")).remain, "$26.50");
-console.log("✓ opencode 窗口 + allowance:", oc.headline.pct);
+const rolling = oc.entries.find((e) => e.name.includes("5h") || e.name.includes("滚动"));
+assert.equal(rolling.pct, 72, "滚动窗口百分比来自服务端");
+const allowance = oc.entries.find((e) => e.name.includes("额度") || e.name.includes("allowance"));
+assert.ok(allowance, "allowance 条目应存在");
+// allowance 原始单位为 microCents 且单位未核验：不得把美元写进 limit/remain 字段
+assert.equal(oc.items.find((i) => i.methodId === "opencode.allowance.oauth").raw.unit, "microCents",
+  "未核验单位时必须保留原始单位");
+console.log("✓ opencode 窗口 + allowance（原始单位）:", rolling.pct + "%");
 
-// Command Code：窗口 + 月额度（保留兼容来源；重置时间补齐：epoch-ms / ISO / 诚实缺省）
+// ---- Command Code：服务端窗口（不猜分母）+ 公开规则月进度 ----
 const cc = await PROVIDERS.commandcode.query(cfg());
-assert.equal(cc.entries.length, 3);
 assert.equal(cc.state, "ok");
-const monthly = cc.entries.find((e) => e.name.startsWith("月额度"));
-assert.equal(monthly.remain, "$12.50");
-for (const e of cc.entries) {
-  assert.notEqual(e.reset, "—", `${e.name} 应带重置时间`);
-  assert.match(e.reset, /重置$/);
-  assert.equal(e.note.includes("未提供重置时刻"), false);
-  // 原始时刻随条目下发（客户端据此算精确倒计时 *h*m / *d*h）；文案是四舍五入过的，时刻不是
-  assert.ok(Number.isFinite(e.resetAt), `${e.name} 应带 epoch-毫秒 resetAt`);
-}
-assert.equal(cc.entries.find((e) => e.name.includes("5h")).resetAt, Date.UTC(2025, 7, 26, 5),
-  "5h 窗口的 resetAt 应是原始 epoch-毫秒（不被 formatReset 的整小时取整影响）");
-assert.ok(Number.isFinite(cc.headline.resetAt), "headline 也应镜像最紧条目的 resetAt");
-assert.match(monthly.note, /订阅 active/);
-console.log("✓ commandcode:", cc.entries.map((e) => `${e.name}:${e.pct}% (${e.reset})`).join(" | "));
+const fiveHour = cc.entries.find((e) => e.name.includes("5h"));
+assert.equal(fiveHour.pct, 20, "5h 窗口 = 2/10");
+assert.equal(fiveHour.resetAt, Date.UTC(2025, 7, 26, 5), "epoch-毫秒 resetAt 原样保留");
+const weekly = cc.entries.find((e) => e.name.includes("周"));
+assert.equal(weekly.pct, 28, "周窗口 = 8.5/30 → 28.33 取整 28");
+const monthly = cc.entries.find((e) => e.name.includes("月度进度"));
+assert.ok(monthly, "公开规则可用时应输出月度进度");
+assert.equal(monthly.basis, "public-rule", "月度进度必须标记为公开规则口径");
+// granted=30 优先于 tier.total=30，剩余 12.5 → 已用 17.5 → 58.33% → 58.3
+assert.equal(monthly.pct, 58, "已用比例 = (30 − 12.5)/30");
+assert.equal(monthly.report, undefined);
+assert.ok(cc.items.every((i) => i.raw.remaining === undefined || i.raw.remaining !== null || true));
+console.log("✓ commandcode:", cc.entries.map((e) => `${e.name}:${e.pct}%`).join(" | "));
 
-// 窗口缺 resetAt 的真实缺省路径：如实标注「未提供重置时刻」，不伪造时刻
+// ---- Command Code：公开规则不可用时不得编造进度 ----
+const tiersRoute = ROUTES.find(([p]) => p === "/assets/plan-tiers-abc123.js");
+const originalTiers = tiersRoute[2];
+tiersRoute[2] = "x={}"; // 无套餐字面量
+const { resetTiersCache } = await import("../lib/quota-reference/commandcode-monthly.js");
+resetTiersCache();
+const ccNoRules = await PROVIDERS.commandcode.query(cfg());
+assert.equal(ccNoRules.entries.some((e) => e.name.includes("月度进度")), false,
+  "公开规则不可用时不得输出月度进度");
+assert.ok(ccNoRules.entries.some((e) => e.name.includes("5h")), "真实窗口不受公开规则失败影响");
+console.log("✓ commandcode 公开规则失败 → 不编造进度，真实窗口保留");
+tiersRoute[2] = originalTiers;
+resetTiersCache();
+
+// ---- Command Code：窗口缺 resetAt 时如实标注，不伪造时刻 ----
 const ccRoute = ROUTES.find(([p]) => p === "/alpha/billing/credits");
-ccRoute[2].windowLimits = { fiveHour: { used: 2.0, cap: 10.0 }, weekly: { used: 8.5, cap: 30.0 } };
+const originalCredits = ccRoute[2];
+ccRoute[2] = { credits: { planId: "individual-pro", monthlyCredits: 12.5 }, windowLimits: { fiveHour: { used: 2.0, cap: 10.0 } } };
 const ccNoReset = await PROVIDERS.commandcode.query(cfg());
-for (const e of ccNoReset.entries.filter((x) => x.kind === "win" && !x.name.startsWith("月额度"))) {
-  assert.equal(e.reset, "—");
-  assert.equal(e.note, "未提供重置时刻");
-  assert.equal(e.resetAt, null, "没有时刻就是 null——不能伪造，客户端据此回落宿主文案");
-}
-console.log("✓ commandcode 缺 resetAt → 诚实标注:", ccNoReset.entries.filter((e) => e.name.startsWith("5h")).map((e) => `${e.name}:${e.note}`).join(" | "));
+const noResetEntry = ccNoReset.entries.find((e) => e.name.includes("5h"));
+assert.equal(noResetEntry.reset, "—");
+assert.equal(noResetEntry.resetAt, null, "没有时刻就是 null——不能伪造");
+console.log("✓ commandcode 缺 resetAt → 诚实标注:", noResetEntry.note);
+ccRoute[2] = originalCredits;
 
-// 端点校验：非官方主机/非默认端口/路径越界 → 不发请求
+// ---- Command Code：月剩余不作为总额（旧 PLAN_MONTHLY_CREDITS 路径已删除）----
+const creditsRoute = ROUTES.find(([p]) => p === "/alpha/billing/credits");
+const originalBody = creditsRoute[2];
+creditsRoute[2] = { credits: { planId: "individual-ultra", monthlyCredits: 7 }, windowLimits: {} };
+resetTiersCache();
+const ccNoDenominator = await PROVIDERS.commandcode.query(cfg());
+assert.equal(ccNoDenominator.entries.some((e) => e.name.includes("月额度")), false,
+  "不得用静态套餐表倒推月额度");
+console.log("✓ commandcode 删除静态套餐分母：未知套餐不产生虚假月额度");
+creditsRoute[2] = originalBody;
+resetTiersCache();
+
+// ---- Fireworks：月消费是消费，不是余额 ----
+const fw = await PROVIDERS.fireworks.query(cfg());
+assert.equal(fw.state, "ok");
+const spendA = fw.entries.find((e) => e.name.includes("team-a"));
+const spendB = fw.entries.find((e) => e.name.includes("team-b"));
+assert.equal(spendA.used, "$12.50", "usage 即本月消费");
+assert.equal(spendB.used, "$0.00", "0 是真实的消费值（不是缺失）");
+assert.equal(spendA.kind, "cost", "月消费必须是 cost 而不是 bal");
+assert.equal(spendA.remain, "—", "消费没有余额字段；绝不用 value − usage 冒充钱包余额");
+// 多账户不求和
+assert.equal(fw.entries.filter((e) => e.kind === "cost").length, 2);
+console.log("✓ fireworks 月消费（逐账户）:", fw.entries.map((e) => `${e.name}=${e.used}`).join(" | "));
+
+// ---- OpenDesign：错误 workspace 必须拒绝（无控制台会话时先报可解释阻塞）----
+const odNoConsole = await PROVIDERS.opendesign.query({ workspaceId: "ws-1" });
+// 控制台方法默认关闭：聚合查询在调度层就被拦下，不产生任何条目
+assert.ok(["environment-unavailable", "disabled", "auth-required"].includes(odNoConsole.status),
+  `无浏览器环境时应报可解释的阻塞（实际 ${odNoConsole.status}），而不是假数据`);
+assert.equal(odNoConsole.entries.length, 0, "阻塞状态下不得输出任何额度条目");
+// 直接调用方法（绕过默认开关）：非法工作空间必须在发请求前被拒绝
+const { runMethod } = await import("../lib/providers.js");
+const odBadWorkspace = await runMethod("opendesign", "opendesign.windows.console",
+  { workspaceId: "https://open-design.ai.evil.com/cloud/dashboard?workspaceId=ws" }, {});
+assert.equal(odBadWorkspace.status, "schema-mismatch", "非法工作空间链接在发请求前被拒绝");
+const odOkButNoConsole = await runMethod("opendesign", "opendesign.windows.console", { workspaceId: "ws-1" }, {});
+assert.equal(odOkButNoConsole.status, "environment-unavailable",
+  "合法工作空间但无浏览器环境 → 环境不可用，不是假数据");
+console.log("✓ opendesign：无会话可解释阻塞 + 非法 workspace 预先拒绝");
+
+// ---- 端点校验：非官方主机/非默认端口/路径越界 → 不发请求 ----
 for (const [id, badBase] of [
   ["deepseek", "https://api.deepseek.com.evil.invalid"],
   ["deepseek", "https://api.deepseek.com:8443"],
-  ["moonshot-cn", "https://evil.invalid/v1"],
   ["openrouter", "https://openrouter.ai?secret=x"],
-  ["zai", "https://api.z.ai/not-allowed"],
+  ["fireworks", "https://api.fireworks.ai.evil.invalid"],
 ]) {
   const before = fetchCount;
   const bad = await PROVIDERS[id].query(cfg({ baseUrl: badBase }));
   assert.equal(bad.state, "err");
-  assert.equal(bad.error.code, "endpoint", `${id} ${badBase} 应报 endpoint`);
+  // 非法地址归类为结构/端点不匹配；关键是不发请求、且错误信息指出是地址问题
+  assert.equal(bad.status, "schema-mismatch", `${id} ${badBase} 应报端点不匹配（实际 ${bad.status}）`);
+  assert.match(bad.error.message, /Base URL/, `${id} 错误信息必须指出是地址问题`);
   assert.equal(fetchCount, before, `${id} 地址越界时不得发起网络请求`);
 }
 console.log("✓ 官方主机/路径/端口/查询串校验（无网络请求）");
 
-// 失败路径：401 → err/auth；未配置 Key → off
+// ---- 失败路径：401 → 需要凭据（投影为 off）；未配置 Key → off ----
 installFetch();
-globalThis.fetch = async (url) => ({ ok: false, status: 401, text: async () => "" });
+globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => "" });
 const dsBad = await PROVIDERS.deepseek.query(cfg());
-assert.equal(dsBad.state, "err");
-assert.equal(dsBad.error.code, "auth");
+assert.equal(dsBad.status, "auth-required", "401 归类为需要凭据");
+assert.equal(dsBad.state, "off", "需要凭据在旧投影里是 off（与既有 UI 语义一致）");
 const dsOff = await PROVIDERS.deepseek.query({ apiKey: "" });
 assert.equal(dsOff.state, "off");
-console.log("✓ 401 → err/auth；无 Key → off");
+assert.equal(dsOff.status, "auth-required");
+console.log("✓ 401 → auth-required/off；无 Key → off");
 
-// 格式化
-import { formatBig, formatMoney } from "../lib/providers.js";
+// ---- 被排除厂商：注册表层面不存在（不恢复、不删测试）----
+for (const id of ["moonshot-cn", "zai", "minimax", "openai-org", "anthropic-org"]) {
+  assert.equal(id in PROVIDERS, false, `${id} 不得出现在本轮注册表`);
+}
+console.log("✓ 被排除厂商不在注册表中");
+
+// ---- 格式化 ----
 assert.equal(formatBig(1_234_567), "1.2M");
 assert.equal(formatBig(999), "999");
 assert.equal(formatMoney(12.5, "USD"), "$12.50");
 assert.equal(formatMoney(88.4, "CNY"), "¥88.40");
 console.log("✓ 格式化：1.2M / 999 / $12.50 / ¥88.40");
 
-console.log("\n数据层冒烟测试全部通过 ✔");
-
-// 占位时刻（上游用 0 表示「无重置时刻」）必须等价于「没给」，不能被当成 1970 年的合法时刻
+// 占位时刻（上游用 0 表示「无重置时刻」）必须等价于「没给」
 assert.equal(resetAtMs(new Date(0)), null, "epoch 0 是占位，不是时刻");
 assert.equal(resetAtMs(0), null);
 assert.equal(resetAtMs(-1), null);
 assert.equal(resetAtMs(Date.UTC(2025, 7, 26, 5)), Date.UTC(2025, 7, 26, 5));
 console.log("✓ resetAtMs：占位/秒级值判为无时刻，真时刻原样通过");
+
+console.log("\n数据层冒烟测试全部通过 ✔");

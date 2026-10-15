@@ -2,9 +2,20 @@
 
 DeepSeek Harness 用量监控插件。查看当前会话对应供应商的周期限额、账户余额、报告费用和今日 Token 用量，支持 Windows 桌面端与 Web 界面。
 
-当前版本：**v2.0.4**。要求 **DSH ≥ 0.1.7-rc.2**；真实桌面及 Web 验收环境为 **DSH 0.2.0-rc.2**。
+当前版本：**v2.1.0**。要求 **DSH ≥ 0.1.7-rc.2**；真实桌面及 Web 验收环境为 **DSH 0.2.0-rc.2**。
 
 [GitHub 下载](https://github.com/shxtmaker/dsh-token-quota/releases/latest) · [问题反馈](https://github.com/shxtmaker/dsh-token-quota/issues)
+
+## v2.1.0 更新
+
+- **查询范围收敛**：远程额度、余额、用量与费用查询只允许 7 个供应商 ID（`deepseek`、`openrouter`、`openrouter-account`、`opencode`、`commandcode`、`fireworks`、`opendesign`）；白名单为代码级冻结常量，不能由普通配置扩大。被排除厂商在注册、自动探测、凭据解析、轮询、手动刷新与「测试连接」各环节均被拦截，旧配置里即使仍为 `enabled: true` 也不会发出查询。
+- **本地功能不受影响**：DSH 模型路由、模型选择与凭据不变；被排除厂商的模型仍可正常用于聊天和开发；本地 Token 统计继续记录，`usage.json` 格式不变。
+- **方法级调度**：任务键细化为「配置实例 + 供应商 + 方法 + 资源范围」，各方法独立成功／失败；凭据或账户变更时丢弃迟到响应，手动刷新不绕过在途合并与 429 的 Retry-After。
+- **Command Code**：删除硬编码套餐月额度与用消费倒推剩余的逻辑；月度进度改由官网公开套餐规则计算，且仅在「有效订阅 + 当前账期有效 + 规则可用」同时成立时输出。
+- **OpenCode**：单位换算集中到唯一常量；真实单位未核验前保留 `microCents` 原始额度并显示百分比，不再显示推算出的美元金额。
+- **新增 Fireworks 与 OpenDesign**：Fireworks 查询官方账户本月消费（消费不是余额），控制台 Credits 余额需用 API Key 核对账户归属；OpenDesign 查询所选工作空间成员的 Design Plan 窗口，不查询钱包。
+- **控制台会话**：DeepSeek 控制台用量／费用、Fireworks 余额、OpenDesign 额度使用插件专用浏览器会话（宿主机器上的独立目录），默认关闭并需用户主动登录；`playwright-core` 为生产依赖。
+- **迁移**：升级前先在插件私有目录保存配置回滚快照；白名单供应商旧配置无需重填；被排除供应商的旧条目保留为惰性历史，不参与查询也不被删除。
 
 ## v2.0.4 更新
 
@@ -40,7 +51,7 @@ DeepSeek Harness 用量监控插件。查看当前会话对应供应商的周期
 
 ## 安装
 
-从 Release 下载 **`dsh-token-quota-2.0.4.tgz`**。该文件是插件安装包，`dsh-token-quota-2.0.4-source.tar.gz` 是源码包。插件包不包含 DeepSeek Harness；首次安装可能需要联网下载依赖。
+从 Release 下载 **`dsh-token-quota-2.1.0.tgz`**。该文件是插件安装包，`dsh-token-quota-2.1.0-source.tar.gz` 是源码包。插件包不包含 DeepSeek Harness；首次安装可能需要联网下载依赖。
 
 ### Windows 桌面端
 
@@ -48,7 +59,7 @@ DeepSeek Harness 用量监控插件。查看当前会话对应供应商的周期
 
 ```powershell
 $desktopCli = 'D:\AI\DeepSeek- Harness\resources\runtime\cli\bin\dsh.cmd'
-$archivePath = (Resolve-Path './dsh-token-quota-2.0.4.tgz').Path
+$archivePath = (Resolve-Path './dsh-token-quota-2.1.0.tgz').Path
 & $desktopCli plugin --profile desktop add "file:$archivePath"
 & $desktopCli plugin --profile desktop list --depth 0
 ```
@@ -62,19 +73,19 @@ $archivePath = (Resolve-Path './dsh-token-quota-2.0.4.tgz').Path
 Linux / macOS：
 
 ```bash
-dsh plugin --profile web add "file:$(pwd)/dsh-token-quota-2.0.4.tgz"
+dsh plugin --profile web add "file:$(pwd)/dsh-token-quota-2.1.0.tgz"
 dsh --profile web
 ```
 
 Windows PowerShell：
 
 ```powershell
-$archivePath = (Resolve-Path './dsh-token-quota-2.0.4.tgz').Path
+$archivePath = (Resolve-Path './dsh-token-quota-2.1.0.tgz').Path
 dsh plugin --profile web add "file:$archivePath"
 dsh --profile web
 ```
 
-若旧版本已提示重复路由，先完全退出 DSH，再安装 v2.0.4 并重新启动，以清除当前进程中遗留的旧路由。
+若旧版本已提示重复路由，先完全退出 DSH，再安装当前版本并重新启动，以清除当前进程中遗留的旧路由。
 
 安装或升级前，请先结束当前任务并退出对应 DSH 实例。压缩包升级时，用新包重新执行 `add` 命令，然后重启 DSH 并刷新 Web 页面。
 
@@ -136,22 +147,40 @@ dsh plugin --profile web add "link:$pluginDirectory"
 
 ## 支持的供应商
 
-| 供应商 | 查询内容 | 凭据 | 配置方式 |
+本轮**只查询以下 7 个供应商 ID**。白名单由代码级冻结常量 `QUERY_PROVIDER_IDS` 固定，
+不能通过普通配置扩大范围；未列入的厂商在注册、自动探测、凭据解析、轮询、手动刷新与
+「测试连接」各环节均被拦截，旧配置里即使仍是 `enabled: true` 也不会发出任何查询。
+
+| 供应商 ID | 查询内容 | 凭据 | 配置方式 |
 | --- | --- | --- | --- |
-| DeepSeek | 账户余额，保留多币种 | 普通 API Key | 自动识别或手动 |
-| OpenRouter | 当前 Key 周期额度及今日费用 | 普通 API Key | 自动识别或手动 |
-| OpenRouter 账户 | 账户 credits | Management Key | 手动 |
-| OpenAI 组织 | 最近完整 UTC 日的用量与费用 | 组织 Admin Key | 手动 |
-| Anthropic 组织 | 组织用量与费用 | 组织 Admin Key | 手动 |
-| Moonshot 国内／国际 | 账户余额 | 普通 API Key | 自动识别或手动 |
-| Z.ai／智谱 Coding Plan | 套餐窗口限额 | 普通 API Key | 自动识别或手动 |
-| MiniMax 国内／国际 | Token Plan 窗口限额 | 普通 API Key | 自动识别或手动 |
-| OpenCode（兼容来源） | 5 小时、周、月窗口及 allowance | 普通 API Key／OAuth | 自动识别或手动 |
-| Command Code（兼容来源） | 5 小时、周窗口及套餐月额度 | 普通 API Key | 自动识别或手动 |
+| `deepseek` | 官方账户余额（保留全部币种）；控制台用量与费用（独立会话） | 普通 API Key；控制台会话 | 自动识别或手动；控制台需登录 |
+| `openrouter` | 当前 Key 周期额度 + UTC 今日报告费用 | 普通 API Key | 自动识别或手动 |
+| `openrouter-account` | 平台账户 credits | Management Key | 手动 |
+| `opencode` | API Key 滚动窗口；OAuth allowance | 普通 API Key；allowance Token | 自动识别或手动 |
+| `commandcode` | 服务端 5 小时／周窗口；官网公开规则口径的月度进度 | 普通 API Key | 自动识别或手动 |
+| `fireworks` | 官方账户本月消费（逐账户）；控制台 Credits 余额 | 普通 API Key；控制台会话 | 手动 |
+| `opendesign` | 所选工作空间成员的 Design Plan 窗口 | 控制台会话（工作空间 ID） | 手动 + 登录 |
 
-普通 API Key、Management Key 与 Admin Key 分别配置。插件不会将普通聊天密钥用于组织管理接口，也不会覆盖手动填写的密钥或重新启用显式关闭的供应商。
+**明确不查询**：OpenAI／ChatGPT／Codex、Anthropic／Claude、Moonshot／Kimi、Z.ai／智谱、
+MiniMax，以及任何未列入白名单的厂商或平台。被排除厂商的**模型**仍可正常用于聊天和开发，
+本地 Token 统计也继续记录——范围收敛只限制远程账务查询。
 
-官方查询仅接受对应的 HTTPS 主机与已知基础路径；不符合要求的地址不会发送请求。OpenCode 与 Command Code 使用兼容接口，其可用性取决于供应商接口。表格表示插件支持的查询能力，不代表所有真实账户均已完成验证。
+各平台即使承载 GPT、Claude、Gemini、Kimi 等模型，也只查询**平台自己的**账户／Key／套餐，
+不顺着模型名称追查上游厂商账户。普通 API Key、Management Key 与控制台会话分别配置，
+不互相尝试、不跨平台传递。
+
+### 方法与单位口径
+
+- 每个供应商按「方法」独立取数与独立失败；关掉某个方法后不再发起对应请求。
+- DeepSeek 控制台的用量与费用各自独立成功／失败，缺字段或失败不显示为 0。
+- OpenCode 的 allowance 保留原始 `microCents` 单位；**真实单位未核验前不显示美元**，只显示百分比与原始额度。
+- Command Code 的月度进度只在「有效订阅 + 当前账期有效 + 官网公开规则可用」同时成立时输出，
+  并标记为公开规则口径；规则过期或套餐未知时只显示服务端窗口。
+- Fireworks 的月消费是**消费**，不是钱包余额；控制台余额需用 API Key 核对账户归属。
+- OpenDesign 只查询 Design Plan 窗口，不查询钱包余额；`eligible: false` 表示无对应套餐（不是已耗尽）。
+- 官方查询仅接受对应 HTTPS 主机与已知基础路径；不符合要求的认证、地域、端口或协议在发请求前即被拒绝。
+
+表格表示插件实现的查询能力，不代表每个真实账户都已完成验证。
 
 ## 数据保存与升级
 
@@ -165,10 +194,10 @@ dsh plugin --profile web add "link:$pluginDirectory"
 
 ## 限制
 
-- 仅观测经过 Harness 的调用；本机 Codex CLI 登录状态和独立 CLI 用量不在范围内。
+- 仅观测经过 Harness 的调用；本机 CLI（含 Codex CLI）登录状态和独立 CLI 用量不在查询范围内。
 - 供应商未返回重置时间时，不推算或补造时间；无限额度和未知余额保留未知。
 - 没有多日趋势界面；本地用量统计与供应商账单可能因周期、时区和统计范围不同而不同。
-- 真实供应商余额、付费调用及 Admin／Management Key 账户需要使用实际凭据另行验证。
+- 真实账户验证状态见 `docs/provider-upgrade-progress.md`：已用现有授权凭据完成一次只读对照的部分不在此列；未配置凭据或需要控制台登录的方法标注为「已实现，未真实账户验证」。
 - 当前 HTTP 接口面向本机同源访问；反向代理的公开来源配置需另行处理。
 - 用量文件损坏或版本不支持时保留原文件并提示错误；退出时无法写入的增量不能保证保存。
 
@@ -186,8 +215,8 @@ npm pack
 真实宿主验收使用独立数据目录与 profile，不修改日常配置：
 
 ```powershell
-npm run test:desktop -- --app 'C:/path/DeepSeek Harness.exe' --package 'C:/path/dsh-token-quota-2.0.4.tgz' --output '.scratch/desktop-v2-check'
-node scripts/verify-web.mjs --app 'C:/path/DeepSeek Harness.exe' --package 'C:/path/dsh-token-quota-2.0.4.tgz' --output '.scratch/web-v2-check'
+npm run test:desktop -- --app 'C:/path/DeepSeek Harness.exe' --package 'C:/path/dsh-token-quota-2.1.0.tgz' --output '.scratch/desktop-v2-check'
+node scripts/verify-web.mjs --app 'C:/path/DeepSeek Harness.exe' --package 'C:/path/dsh-token-quota-2.1.0.tgz' --output '.scratch/web-v2-check'
 npm run test:lifecycle -- --app 'C:/path/DeepSeek Harness.exe' --output '.scratch/lifecycle-v2-check'
 ```
 

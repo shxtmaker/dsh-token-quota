@@ -128,24 +128,22 @@ assert.equal(resolved.suppliers.commandcode.autoSource, "llm-pi-ai");
 assert.equal(resolved.suppliers.commandcode.autoApiKeyEnv, "COMMANDCODE_GOAT_API_KEY");
 assert.equal(resolved.suppliers.commandcode.baseUrl, "https://api.commandcode.ai/provider/v1", "Base URL 跟随 DSH（兼容网关路径）");
 assert.equal(resolved.suppliers.openrouter.enabled, true, "pi-ai openrouter → 自动启用 openrouter（普通 Key 额度/费用）");
-assert.equal(resolved.suppliers["moonshot-cn"].enabled, true, "moonshotai-cn → 自动启用 moonshot-cn（国内余额）");
-assert.equal(resolved.suppliers["moonshot-cn"].baseUrl, "https://api.moonshot.cn/v1");
-assert.equal(resolved.suppliers["zai-cn"].enabled, true, "zai-coding-cn → 自动启用 zai-cn（智谱国内 Coding Plan）");
-assert.equal(resolved.suppliers["openai-org"], undefined, "OpenAI 普通聊天 Key 绝不自动启用 openai-org（需 Admin Key）");
+// 本轮范围收敛：被排除厂商即使 DSH 里配置了路由与密钥也不得进入插件配置
+for (const id of ["moonshot-cn", "moonshot-intl", "zai", "zai-cn", "minimax", "minimax-cn", "openai-org", "anthropic-org"]) {
+  assert.equal(resolved.suppliers[id], undefined, `${id} 不在本轮查询范围，绝不能被自动启用`);
+}
 assert.equal(resolved.suppliers.deepseek.apiKey, "file-sk-DEEPSEEK_API_KEY", "API Key 本体自动填入插件 settings");
 assert.equal(resolved.suppliers.opencode.apiKey, "file-sk-OPENCODE_GO_API_KEY");
 assert.equal(resolved.suppliers.commandcode.apiKey, "file-sk-COMMANDCODE_GOAT_API_KEY");
 assert.equal(resolved.suppliers.openrouter.apiKey, "file-sk-OPENROUTER_API_KEY");
-assert.equal(resolved.suppliers["moonshot-cn"].apiKey, "file-sk-MOONSHOT_CN_API_KEY");
-assert.equal(resolved.suppliers["zai-cn"].apiKey, "file-sk-ZAI_CODING_CN_API_KEY");
 const dsCall = calls.find((c) => c.url.includes("user/balance"));
 assert.ok(dsCall, "自动填入后应发起余额查询");
 assert.equal(dsCall.auth, "Bearer file-sk-DEEPSEEK_API_KEY", "取数使用的是自动填入的密钥（与 DSH 凭据库一致）");
-console.log("✓ 自动探测：6 个普通 Key 供应商自动启用 + 官方 baseUrl + API Key 自动填入；Admin 不套用");
+console.log("✓ 自动探测：白名单普通 Key 供应商自动启用 + 官方 baseUrl + API Key 自动填入；被排除厂商零写入");
 
 // ---- 路由表 ----
 const paths = ctx._routes.map((r) => r.path);
-assert.deepEqual(paths, ["/api/dsh-token-quota/state", "/api/dsh-token-quota/refresh", "/api/dsh-token-quota/test", "/api/dsh-token-quota/settings", "/api/dsh-token-quota/rescan"]);
+assert.deepEqual(paths, ["/api/dsh-token-quota/state", "/api/dsh-token-quota/refresh", "/api/dsh-token-quota/test", "/api/dsh-token-quota/settings", "/api/dsh-token-quota/rescan", "/api/dsh-token-quota/console"]);
 
 const call = async (path, body, headers = { origin: "" }, method = String(path).split("?")[0].endsWith("/state") ? "GET" : "POST") => {
   const route = ctx._routes.find((r) => r.path === String(path).split("?")[0]);
@@ -161,7 +159,18 @@ const call = async (path, body, headers = { origin: "" }, method = String(path).
 assert.equal((await call("/api/dsh-token-quota/refresh", null, {}, "GET")).status, 405);
 assert.equal((await call("/api/dsh-token-quota/state", null, { origin: "http://localhost:3001", host: "localhost:3000" })).status, 403);
 assert.equal((await call("/api/dsh-token-quota/state", null, { origin: "http://[::1]:3000", host: "[::1]:3000" })).status, 200);
-assert.equal((await call("/api/dsh-token-quota/test", { supplier: "toString" })).status, 400);
+// 非白名单 ID（含原型链名与未知名）→ 200 + 结构化 unsupported-provider，绝不发请求
+for (const id of ["toString", "openai-org", "moonshot-cn", "gemini"]) {
+  const unsupported = await call("/api/dsh-token-quota/test", { supplier: id });
+  assert.equal(unsupported.status, 200, `${id} 应返回结构化结果而不是崩溃`);
+  assert.equal(unsupported.payload.ok, false);
+  assert.equal(unsupported.payload.status, "unsupported-provider");
+  assert.equal(unsupported.payload.excluded, true);
+  assert.equal(unsupported.payload.result, null, `${id} 绝不产生查询结果`);
+  assert.match(unsupported.payload.error, /不在本轮查询范围|未知或不支持/);
+}
+// 白名单内但未知方法名同样被拒绝
+assert.equal((await call("/api/dsh-token-quota/test", { supplier: "deepseek", config: "not-an-object" })).payload.ok, false);
 
 // ---- state ----
 const s1 = await call("/api/dsh-token-quota/state");
@@ -179,22 +188,31 @@ const oc = s1.payload.suppliers.find((s) => s.id === "opencode");
 assert.equal(oc.autoDetected, true);
 assert.equal(oc.keySet, true);
 assert.equal(oc.envKeySet, true);
-assert.equal(oc.state, "err");
+// Mock 网关对 /zen/go/v1/usage 返回 404 → 方法级结构不匹配；关键是状态稳定且不产出假数据
+assert.ok(["schema-mismatch", "network-error"].includes(oc.status), `opencode 状态应可解释（实际 ${oc.status}）`);
+assert.deepEqual(oc.items, [], "失败不得产出条目");
 const cc = s1.payload.suppliers.find((s) => s.id === "commandcode");
 assert.equal(cc.autoDetected, true);
 assert.equal(cc.keySet, true);
 assert.equal(cc.autoEnvName, "COMMANDCODE_GOAT_API_KEY");
-assert.equal(cc.state, "err");
-assert.deepEqual(s1.payload.detectedUnmapped.map((u) => u.route), ["openai"], "pi-ai 普通聊天 Key（openai）应进入 detectedUnmapped 并提示需 Admin Key");
-assert.match(s1.payload.detectedUnmapped[0].detail || "", /Admin Key/);
-assert.equal(s1.payload.suppliers.length, 13, "供应商注册表含 13 项（凭据类别 × 地域拆分）");
+assert.ok(["auth-required", "schema-mismatch", "network-error", "off"].includes(cc.status), `commandcode 状态应可解释（实际 ${cc.status}）`);
+// 被排除厂商只作为「不在本轮查询范围」出现在诊断里，不生成供应商卡片
+assert.ok(s1.payload.detectedUnmapped.some((u) => u.route === "openai"), "openai 应进入 detectedUnmapped");
+for (const u of s1.payload.detectedUnmapped) {
+  assert.match(u.detail || "", /不在本轮查询范围/, `${u.route} 应给出范围原因`);
+}
+assert.equal(s1.payload.suppliers.length, 7, "供应商注册表只含 7 个查询白名单 ID");
+// 排除项不会出现在 /state 的供应商列表里
+for (const id of ["moonshot-cn", "zai-cn", "minimax-cn", "openai-org", "anthropic-org"]) {
+  assert.equal(s1.payload.suppliers.some((s) => s.id === id), false, `${id} 不得出现在状态列表`);
+}
 // v1.1 已添加推导：探测到 → added（即使显式关闭也在主目录；仅阈值/BaseURL 改动不算）
-for (const id of ["deepseek", "opencode", "commandcode", "openrouter", "moonshot-cn", "zai-cn"]) {
+for (const id of ["deepseek", "opencode", "commandcode", "openrouter"]) {
   const s = s1.payload.suppliers.find((x) => x.id === id);
   assert.equal(s.added, true, `${id} 探测到 → added`);
   assert.equal(s.addedReason, "detected", `${id} addedReason=detected`);
 }
-for (const id of ["openai-org", "anthropic-org", "openrouter-account"]) {
+for (const id of ["openrouter-account", "fireworks", "opendesign"]) {
   const s = s1.payload.suppliers.find((x) => x.id === id);
   assert.equal(s.added, false, `${id} 未探测且未启用无密钥 → 不算已添加`);
   assert.equal(s.addedReason, null, `${id} addedReason=null`);
@@ -202,8 +220,8 @@ for (const id of ["openai-org", "anthropic-org", "openrouter-account"]) {
 const det = s1.payload.detect;
 assert.equal(det.error, null, "探测无异常");
 assert.deepEqual([...det.found].sort(), [
-  "commandcode", "deepseek", "moonshot-cn", "opencode", "openrouter", "zai-cn",
-], "探测命中六家普通 Key 供应商");
+  "commandcode", "deepseek", "opencode", "openrouter",
+], "探测只命中白名单内的普通 Key 供应商");
 assert.ok(det.candidates.some((c) => c.route === "opencode-go" && c.keySource === "file"));
 assert.equal(det.credentialsPresent, true);
 assert.equal(s1.payload.active, null, "尚未观测到任何 LLM 调用 → active=null（紧凑条显示暂无调用）");
@@ -211,16 +229,20 @@ const orMeta = s1.payload.suppliers.find((x) => x.id === "openrouter");
 assert.equal(orMeta.autoDetected, true);
 assert.equal(orMeta.meta.credentialClass, "api-key");
 assert.deepEqual(orMeta.meta.needs.map((n) => n.key), ["apiKey"]);
-const oiMeta = s1.payload.suppliers.find((x) => x.id === "openai-org");
-assert.equal(oiMeta.meta.credentialClass, "admin-key", "Admin 供应商带凭据类别元数据供客户端提示手动配置");
-console.log("✓ state：deepseek ok、5 家自动接入、detectedUnmapped=[openai]（Admin 提示）、供应商 meta/needs 下发");
+// 控制台会话类供应商带凭据类别元数据，供客户端提示「需登录控制台」
+const odMeta = s1.payload.suppliers.find((x) => x.id === "opendesign");
+assert.equal(odMeta.meta.credentialClass, "console-session");
+assert.equal(odMeta.meta.needs[0].key, "workspaceId");
+// 范围信息随状态下发（客户端据此只渲染 7 个 ID）
+assert.deepEqual(s1.payload.scope.providerIds, ["deepseek", "openrouter", "openrouter-account", "opencode", "commandcode", "fireworks", "opendesign"]);
+console.log("✓ state：deepseek ok、白名单自动接入、被排除厂商零卡片、供应商 meta/needs 下发");
 
 // ---- 流量兜底（用户报告「小组件信息消失」）：有事件但无任何可用近期流量 → 按启用清单显示 ----
 const emit = (e) => { for (const cb of ctx._events["session/event"]) cb(null, e); };
 emit({ type: "assistant/message", data: { source: { provider: "unknown-route-xyz", model: "m" }, usage: { uncachedInputTokens: 1, outputTokens: 1 } } });
 const sX = await call("/api/dsh-token-quota/state");
 assert.equal(sX.payload.trafficStale, true, "无近期可用流量时应标记 trafficStale");
-for (const id of ["deepseek", "opencode", "commandcode", "openrouter", "moonshot-cn", "zai-cn"]) {
+for (const id of ["deepseek", "opencode", "commandcode", "openrouter"]) {
   assert.equal(sX.payload.suppliers.find((s) => s.id === id).current, true, id + " 应兜底按启用清单显示");
 }
 console.log("✓ 流量兜底：无近期可用流量时小组件按启用清单显示（trafficStale=true）");
@@ -282,13 +304,18 @@ assert.equal(s3.payload.poll.intervalSeconds, 30);
 console.log("✓ settings 路由深合并生效（interval=30，commandcode 启用）");
 
 // ---- added 推导：仅启用（无探测无密钥）→ addedReason=enabled ----
-await call("/api/dsh-token-quota/settings", { suppliers: { "openai-org": { enabled: true } } });
+// 用白名单内的 firewowrks 验证同一规则（被排除厂商不能经设置接口写入）
+await call("/api/dsh-token-quota/settings", { suppliers: { fireworks: { enabled: true } } });
 const sE = await call("/api/dsh-token-quota/state");
-const oiE = sE.payload.suppliers.find((x) => x.id === "openai-org");
-assert.equal(oiE.added, true, "仅启用（无密钥、未探测）→ 已添加");
-assert.equal(oiE.addedReason, "enabled");
-await call("/api/dsh-token-quota/settings", { suppliers: { "openai-org": { enabled: false } } });
-console.log("✓ added 推导：探测到→detected；仅启用→enabled；未触碰→不算");
+const fwE = sE.payload.suppliers.find((x) => x.id === "fireworks");
+assert.equal(fwE.added, true, "仅启用（无密钥、未探测）→ 已添加");
+assert.equal(fwE.addedReason, "enabled");
+await call("/api/dsh-token-quota/settings", { suppliers: { fireworks: { enabled: false } } });
+// 被排除 ID 经设置接口写入必须被拒绝（400），不能扩大查询范围
+const rejected = await call("/api/dsh-token-quota/settings", { suppliers: { "openai-org": { enabled: true } } });
+assert.equal(rejected.status, 400, "被排除供应商不得经设置接口写入");
+assert.match(rejected.payload.error, /不在本轮查询范围/);
+console.log("✓ added 推导：探测到→detected；仅启用→enabled；未触碰→不算；被排除项写入被拒");
 
 // ---- R2：POST /rescan 复用周期自动探测（幂等、尊重显式关闭）并返回 /state 载荷 ----
 const rsc = await call("/api/dsh-token-quota/rescan");
